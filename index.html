@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KIMPL1 - Вычисление замыкания функциональных зависимостей</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>ЗАМЫКАНИЕ СИСТЕМЫ ФУНКЦИОНАЛЬНЫХ ЗАВИСИМОСТЕЙ</h1>
+        </div>
+
+        <div class="toolbar">
+            <button id="btnOpen" title="Открыть XML-файл (Ctrl+O)">📂 Открыть</button>
+            <button id="btnCalculate" title="Вычислить замыкание (Ctrl+R)" disabled>⚡ Рассчитать</button>
+            <button id="btnSaveAs" title="Сохранить результат (Ctrl+Shift+S)" disabled>💾 Сохранить</button>
+            <button id="btnQuit" title="Выход (Ctrl+Q)">🚪 Выход</button>
+            <input type="file" id="fileInput" accept=".xml" style="display: none;">
+        </div>
+
+        <div class="info-bar" id="infoBar">
+            <span id="fileInfo">Файл: не загружен</span>
+            <span id="attrInfo">Количество атрибутов: —</span>
+        </div>
+
+        <div class="panels">
+            <div class="panel left-panel">
+                <div class="panel-header" id="leftPanelHeader">📋 Исходная система ФЗ</div>
+                <div class="panel-content" id="leftPanel">
+                    <div class="placeholder">Нет загруженных данных</div>
+                </div>
+            </div>
+            <div class="panel right-panel">
+                <div class="panel-header" id="rightPanelHeader">🎯 Замыкание системы ФЗ</div>
+                <div class="panel-content" id="rightPanel">
+                    <div class="placeholder">Нет результатов</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-bar" id="statusBar">
+            Готов. Выберите файл: Открыть
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
