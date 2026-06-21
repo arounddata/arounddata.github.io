@@ -1,18 +1,18 @@
 // script.js
 /**
  * KIMPL1 - Вычисление замыкания системы функциональных зависимостей
- * Версия 11.20 (сохранение без расчёта, fdsc только при наличии результата)
+ * Версия 11.21 (исправлено дублирование "Введение" в справке)
  */
 
-const APP_VERSION = "11.20";
+const APP_VERSION = "11.21";
 
 // ============================================================
 // Хранилище данных
 // ============================================================
 let appState = {
     currentFile: null,
-    originalFds: [],
-    canonicalFds: [],
+    originalFds: [],           // исходные ФЗ (составная форма, как ввёл пользователь)
+    canonicalFds: [],          // каноническая форма (для расчёта)
     attrMap: null,
     attrMapReverse: null,
     numericFds: [],
@@ -24,7 +24,7 @@ let appState = {
 };
 
 // ============================================================
-// АЛГОРИТМИЧЕСКАЯ ЧАСТЬ (без изменений)
+// АЛГОРИТМИЧЕСКАЯ ЧАСТЬ
 // ============================================================
 
 function krang(val, kubl, l, n, ib, ie) {
@@ -720,7 +720,7 @@ async function saveAsFile() {
 }
 
 // ============================================================
-// СПРАВКА (ДВУХПАНЕЛЬНАЯ С ОГЛАВЛЕНИЕМ)
+// СПРАВКА (ДВУХПАНЕЛЬНАЯ С ОГЛАВЛЕНИЕМ, ИСПРАВЛЕННОЕ РАЗБИЕНИЕ)
 // ============================================================
 
 let helpPages = [];
@@ -744,26 +744,40 @@ async function loadHelp() {
         const html = marked.parse(markdown);
         
         const pages = [];
-        const sections = html.split(/(<h2>.*?<\/h2>)/);
         let currentPage = '';
-        let pageTitle = 'Введение';
+        let pageTitle = '';
+        let hasContent = false;
+        
+        // Разбиваем по заголовкам первого и второго уровня
+        const sections = html.split(/(<h1>.*?<\/h1>|<h2>.*?<\/h2>)/);
         
         for (let i = 0; i < sections.length; i++) {
             const section = sections[i];
-            if (section.startsWith('<h2>')) {
-                if (currentPage.trim()) {
-                    pages.push({ title: pageTitle, content: currentPage });
+            if (section.startsWith('<h1>')) {
+                // Сохраняем предыдущую страницу, если она есть
+                if (currentPage.trim() && hasContent) {
+                    pages.push({ title: pageTitle || 'Введение', content: currentPage });
+                }
+                pageTitle = section.replace(/<\/?h1>/g, '').trim();
+                currentPage = section;
+                hasContent = true;
+            } else if (section.startsWith('<h2>')) {
+                if (currentPage.trim() && hasContent) {
+                    pages.push({ title: pageTitle || 'Введение', content: currentPage });
                 }
                 pageTitle = section.replace(/<\/?h2>/g, '').trim();
                 currentPage = section;
+                hasContent = true;
             } else {
                 currentPage += section;
             }
         }
-        if (currentPage.trim()) {
-            pages.push({ title: pageTitle, content: currentPage });
+        // Добавляем последнюю страницу
+        if (currentPage.trim() && hasContent) {
+            pages.push({ title: pageTitle || 'Введение', content: currentPage });
         }
         
+        // Если страниц нет — создаём одну
         if (pages.length === 0) {
             pages.push({ title: 'Справка', content: html });
         }
