@@ -1,27 +1,30 @@
 // script.js
 /**
  * KIMPL1 - Вычисление замыкания системы функциональных зависимостей
- * Версия 9-4 (табличный вывод)
- * 
- * Алгоритм основан на оригинальном PL/I коде (1986)
- * Правила: транзитивность и псевдотранзитивность
+ * Версия 11.20 (сохранение без расчёта, fdsc только при наличии результата)
  */
+
+const APP_VERSION = "11.20";
 
 // ============================================================
 // Хранилище данных
 // ============================================================
 let appState = {
     currentFile: null,
-    originalKubList: null,
-    originalN: null,
-    originalKc1: null,
-    closureCubes: null,
+    originalFds: [],
+    canonicalFds: [],
+    attrMap: null,
+    attrMapReverse: null,
+    numericFds: [],
+    numericN: null,
     closureResult: null,
-    resultSaved: true
+    closureCform: null,
+    resultSaved: true,
+    isDataValid: false
 };
 
 // ============================================================
-// АЛГОРИТМИЧЕСКАЯ ЧАСТЬ
+// АЛГОРИТМИЧЕСКАЯ ЧАСТЬ (без изменений)
 // ============================================================
 
 function krang(val, kubl, l, n, ib, ie) {
@@ -51,6 +54,7 @@ function krang(val, kubl, l, n, ib, ie) {
 }
 
 function tmToCube(tmStr, n) {
+    if (!n || !tmStr) return 0;
     const parts = tmStr.split('-');
     const determinantPart = parts[0];
     const functionPart = parts.length > 1 ? parts[1] : "";
@@ -84,19 +88,8 @@ function tmToCube(tmStr, n) {
     return value;
 }
 
-function cubeToStr(cubeValue, n) {
-    const parts = [];
-    for (let i = 0; i < n; i++) {
-        const digit = (cubeValue >> (i * 2)) & 3;
-        if (digit === 1) parts.push("01");
-        else if (digit === 2) parts.push("10");
-        else if (digit === 3) parts.push("11");
-        else parts.push("00");
-    }
-    return parts.join(".");
-}
-
 function cubeToTm(cubeValue, n) {
+    if (!n) return "";
     const determinants = [];
     const functions = [];
     for (let i = 0; i < n; i++) {
@@ -109,7 +102,7 @@ function cubeToTm(cubeValue, n) {
 }
 
 function kimpl1(kubList, n, kc1) {
-    console.log("kimpl1 started", { n, kc1, kubListLength: kubList.length });
+    if (!n) return { kub: [], ic: 0 };
     const g = n * 2;
     let kub = kubList.slice(0, kc1);
     let ic = kc1;
@@ -127,7 +120,6 @@ function kimpl1(kubList, n, kc1) {
     let iteration = 0;
     while (swout) {
         iteration++;
-        console.log(`Iteration ${iteration}, ic=${ic}, ir=${ir}, k2=${k2}, k3=${k3}`);
         let changed = false;
         const ik1 = ic - 1;
         const ih1 = k3;
@@ -185,7 +177,6 @@ function kimpl1(kubList, n, kc1) {
                             cz2.push(r);
                         }
                         changed = true;
-                        console.log("  New cube added:", cubeToStr(r, n));
                     }
                 }
             }
@@ -194,7 +185,6 @@ function kimpl1(kubList, n, kc1) {
         swi = 0;
         if (!changed) {
             swout = 0;
-            console.log("No changes, exiting");
             break;
         }
         
@@ -283,13 +273,366 @@ function kimpl1(kubList, n, kc1) {
         }
     }
     
-    console.log("kimpl1 finished, ic:", ic);
     return { kub, ic };
 }
 
-function removeFdscElements(xmlString) {
-    return xmlString.replace(/<!--\s*FDS Closure\s*-->/gi, '');
+// ============================================================
+// ПРЕОБРАЗОВАНИЕ С-ФОРМЫ ↔ Ч-ФОРМА
+// ============================================================
+
+function parseCFormToTokens(cform) {
+    const parts = cform.split('-');
+    const determinantPart = parts[0];
+    const functionPart = parts.slice(1).join('-');
+    const determinants = determinantPart.split('*');
+    const functions = functionPart ? functionPart.split('-') : [];
+    return { determinants, functions };
 }
+
+function expandToCanonical(fdsList) {
+    const canonical = [];
+    for (const fd of fdsList) {
+        if (!fd.tm) continue;
+        const { determinants, functions } = parseCFormToTokens(fd.tm);
+        const detStr = determinants.join('*');
+        for (const func of functions) {
+            canonical.push({ tm: `${detStr}-${func}` });
+        }
+    }
+    return canonical;
+}
+
+function getUniqueAttributes(fdsList) {
+    const attrs = new Set();
+    for (const fd of fdsList) {
+        if (!fd.tm) continue;
+        const { determinants, functions } = parseCFormToTokens(fd.tm);
+        determinants.forEach(d => attrs.add(d));
+        functions.forEach(f => attrs.add(f));
+    }
+    return Array.from(attrs).sort();
+}
+
+function cformToNumeric(tmStr, attrMap) {
+    if (!tmStr) return "";
+    const { determinants, functions } = parseCFormToTokens(tmStr);
+    const detNums = determinants.map(d => attrMap.get(d).toString());
+    const funcNums = functions.map(f => attrMap.get(f).toString());
+    return detNums.join('*') + '-' + funcNums.join('-');
+}
+
+function numericToCform(numStr, attrMapReverse) {
+    if (!numStr) return "";
+    const parts = numStr.split('-');
+    const determinantPart = parts[0];
+    const functionPart = parts.length > 1 ? parts[1] : "";
+    const detTokens = determinantPart.split('*');
+    const funcTokens = functionPart ? functionPart.split('-') : [];
+    const detCform = detTokens.map(t => attrMapReverse.get(parseInt(t))).join('*');
+    const funcCform = funcTokens.map(t => attrMapReverse.get(parseInt(t))).join('-');
+    return detCform + '-' + funcCform;
+}
+
+function convertFdsListToNumeric(fdsList, attrMap) {
+    const result = [];
+    for (const fd of fdsList) {
+        if (!fd.tm) continue;
+        const numericTm = cformToNumeric(fd.tm, attrMap);
+        if (numericTm) result.push({ tm: numericTm });
+    }
+    return result;
+}
+
+// ============================================================
+// ФУНКЦИИ ОТОБРАЖЕНИЯ
+// ============================================================
+
+function escapeHtml(str) {
+    return str.replace(/[&<>]/g, function(m) {
+        if (m === '&') return '&amp;';
+        if (m === '<') return '&lt;';
+        if (m === '>') return '&gt;';
+        return m;
+    });
+}
+
+function renderEditableTable() {
+    const leftPanel = document.getElementById('leftPanel');
+    if (appState.originalFds.length === 0) {
+        leftPanel.innerHTML = '<div class="placeholder">Нет данных. Добавьте ФЗ или откройте файл.</div>';
+        return;
+    }
+    let html = '<table class="fds-table">';
+    html += '<tbody>';
+    for (let i = 0; i < appState.originalFds.length; i++) {
+        const fd = appState.originalFds[i];
+        const tmStr = fd.tm;
+        const displayValue = tmStr === "" ? "" : escapeHtml(tmStr);
+        html += `<tr data-index="${i}">
+            <td class="fd-number">${i + 1}</td>
+            <td class="fd-tm editable" contenteditable="true">${displayValue}</td>
+            <td class="fd-action"><button class="delete-row-btn" data-index="${i}">🗑️</button></td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    leftPanel.innerHTML = html;
+    
+    document.querySelectorAll('#leftPanel .editable').forEach(cell => {
+        if (cell.innerText.trim() === "") {
+            cell.classList.add('empty-placeholder');
+            cell.setAttribute('data-placeholder', 'Введите ФЗ (A-B-C, A*B-C)');
+        }
+        cell.addEventListener('focus', () => {
+            if (cell.innerText.trim() === "") {
+                cell.innerText = "";
+                cell.classList.remove('empty-placeholder');
+            }
+        });
+        cell.addEventListener('blur', (e) => {
+            const row = cell.closest('tr');
+            const index = parseInt(row.dataset.index);
+            let newTm = cell.innerText.trim();
+            if (newTm === "") {
+                deleteFdAt(index);
+                return;
+            }
+            if (newTm !== appState.originalFds[index].tm) {
+                updateFdAt(index, newTm);
+            } else {
+                cell.innerText = appState.originalFds[index].tm;
+            }
+        });
+    });
+    
+    document.querySelectorAll('#leftPanel .delete-row-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const index = parseInt(btn.dataset.index);
+            deleteFdAt(index);
+        });
+    });
+}
+
+function renderCenterPanel() {
+    const centerPanel = document.getElementById('centerPanel');
+    if (!appState.isDataValid || appState.originalFds.length === 0) {
+        centerPanel.innerHTML = '<div class="placeholder">Нажмите «Проверить» для проверки данных.</div>';
+        return;
+    }
+    let html = '<table class="fds-table">';
+    html += '<tbody>';
+    for (let i = 0; i < appState.originalFds.length; i++) {
+        const fd = appState.originalFds[i];
+        if (!fd.tm) continue;
+        html += `<tr>
+            <td class="fd-number">${i + 1}</td>
+            <td class="fd-tm">${escapeHtml(fd.tm)}</td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    centerPanel.innerHTML = html;
+    document.getElementById('attrInfo').textContent = `Количество атрибутов: ${appState.numericN !== null ? appState.numericN : '?'}`;
+}
+
+function renderClosureTable() {
+    const rightPanel = document.getElementById('rightPanel');
+    if (!appState.closureCform || appState.closureCform.length === 0) {
+        rightPanel.innerHTML = '<div class="placeholder">Нет результатов. Нажмите «Рассчитать».</div>';
+        return;
+    }
+    let html = '<table class="fds-table">';
+    html += '<tbody>';
+    for (let i = 0; i < appState.closureCform.length; i++) {
+        html += `<tr>
+            <td class="fd-number">${i + 1}</td>
+            <td class="fd-tm">${escapeHtml(appState.closureCform[i])}</td>
+        </tr>`;
+    }
+    html += '</tbody></table>';
+    rightPanel.innerHTML = html;
+}
+
+// ============================================================
+// ДЕЙСТВИЯ С ДАННЫМИ
+// ============================================================
+
+function updateFdAt(index, newTm) {
+    appState.originalFds[index] = { tm: newTm };
+    appState.isDataValid = false;
+    appState.canonicalFds = null;
+    appState.numericFds = null;
+    appState.numericN = null;
+    appState.closureResult = null;
+    appState.closureCform = null;
+    document.getElementById('centerPanel').innerHTML = '<div class="placeholder">Нажмите «Проверить» после ввода данных.</div>';
+    document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
+    document.getElementById('attrInfo').textContent = 'Количество атрибутов: —';
+    document.getElementById('btnCalculate').disabled = true;
+    updateUI();
+}
+
+function deleteFdAt(index) {
+    appState.originalFds.splice(index, 1);
+    appState.isDataValid = false;
+    appState.canonicalFds = null;
+    appState.numericFds = null;
+    appState.numericN = null;
+    appState.closureResult = null;
+    appState.closureCform = null;
+    document.getElementById('centerPanel').innerHTML = '<div class="placeholder">Нажмите «Проверить» после ввода данных.</div>';
+    document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
+    document.getElementById('attrInfo').textContent = 'Количество атрибутов: —';
+    document.getElementById('btnCalculate').disabled = true;
+    updateUI();
+}
+
+function addEmptyFd() {
+    appState.originalFds.push({ tm: "" });
+    appState.isDataValid = false;
+    appState.canonicalFds = null;
+    appState.numericFds = null;
+    appState.numericN = null;
+    appState.closureResult = null;
+    appState.closureCform = null;
+    document.getElementById('centerPanel').innerHTML = '<div class="placeholder">Нажмите «Проверить» после ввода данных.</div>';
+    document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
+    document.getElementById('attrInfo').textContent = 'Количество атрибутов: —';
+    document.getElementById('btnCalculate').disabled = true;
+    updateUI();
+}
+
+function clearAllPanels() {
+    appState.currentFile = null;
+    appState.originalFds = [];
+    appState.canonicalFds = null;
+    appState.attrMap = null;
+    appState.attrMapReverse = null;
+    appState.numericFds = null;
+    appState.numericN = null;
+    appState.closureResult = null;
+    appState.closureCform = null;
+    appState.isDataValid = false;
+    appState.resultSaved = true;
+    updateUI();
+    document.getElementById('statusBar').textContent = "Готов. Откройте файл или введите ФЗ вручную.";
+    document.getElementById('fileInfo').textContent = "Файл: не загружен";
+    document.getElementById('attrInfo').textContent = "Количество атрибутов: —";
+    document.getElementById('centerPanel').innerHTML = '<div class="placeholder">Нажмите «Проверить» после ввода данных.</div>';
+    document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
+}
+
+function checkData() {
+    if (appState.originalFds.length === 0) {
+        alert("Нет данных для проверки. Добавьте ФЗ или откройте файл.");
+        return;
+    }
+    const hasEmpty = appState.originalFds.some(fd => !fd.tm || fd.tm.trim() === "");
+    if (hasEmpty) {
+        alert("Есть пустые строки. Заполните или удалите их.");
+        return;
+    }
+    
+    const canonicalFds = expandToCanonical(appState.originalFds);
+    if (canonicalFds.length === 0) {
+        alert("Не удалось преобразовать ФЗ в каноническую форму.");
+        return;
+    }
+    
+    const uniqueAttrs = getUniqueAttributes(canonicalFds);
+    if (uniqueAttrs.length === 0) {
+        alert("Не удалось определить атрибуты. Проверьте правильность введённых ФЗ.");
+        return;
+    }
+    
+    appState.attrMap = new Map();
+    appState.attrMapReverse = new Map();
+    uniqueAttrs.forEach((attr, idx) => {
+        appState.attrMap.set(attr, idx + 1);
+        appState.attrMapReverse.set(idx + 1, attr);
+    });
+    
+    appState.canonicalFds = canonicalFds;
+    appState.numericFds = convertFdsListToNumeric(canonicalFds, appState.attrMap);
+    appState.numericN = uniqueAttrs.length;
+    appState.isDataValid = true;
+    appState.closureCform = null;
+    
+    renderCenterPanel();
+    document.getElementById('statusBar').textContent = `Проверка выполнена. Найдено атрибутов: ${appState.numericN}`;
+    document.getElementById('btnCalculate').disabled = false;
+    document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
+}
+
+function calculate() {
+    if (!appState.isDataValid) {
+        alert("Данные не проверены. Сначала нажмите «Проверить».");
+        return;
+    }
+    if (!appState.numericFds || appState.numericFds.length === 0) {
+        alert("Нет данных для расчёта.");
+        return;
+    }
+    if (!appState.numericN) {
+        alert("Не удалось определить количество атрибутов.");
+        return;
+    }
+    
+    const numericTmList = appState.numericFds.map(fd => fd.tm);
+    const n = appState.numericN;
+    const kc1 = numericTmList.length;
+    const kubList = numericTmList.map(tm => tmToCube(tm, n));
+    kubList.push(0);
+    
+    document.getElementById('statusBar').textContent = "Вычисление замыкания...";
+    setTimeout(() => {
+        try {
+            const { kub, ic } = kimpl1(kubList, n, kc1);
+            const closureNumeric = [];
+            for (let i = 0; i < ic; i++) {
+                const tmStr = cubeToTm(kub[i], n);
+                if (tmStr) closureNumeric.push(tmStr);
+            }
+            appState.closureResult = closureNumeric;
+            appState.closureCform = closureNumeric.map(num => numericToCform(num, appState.attrMapReverse)).filter(c => c);
+            appState.resultSaved = false;
+            renderClosureTable();
+            document.getElementById('statusBar').textContent = `Вычисление завершено. Всего ФЗ: ${ic}`;
+        } catch (err) {
+            console.error(err);
+            document.getElementById('statusBar').textContent = `Ошибка: ${err.message}`;
+            alert("Ошибка при вычислении: " + err.message);
+        }
+    }, 100);
+}
+
+// ============================================================
+// ГЕНЕРАЦИЯ XML ДЛЯ СОХРАНЕНИЯ
+// ============================================================
+
+function generateXmlContent() {
+    const originalCformList = appState.originalFds.map(fd => fd.tm);
+    
+    let lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<fds>', '<fdsi>'];
+    for (let idx = 0; idx < originalCformList.length; idx++) {
+        lines.push(`    <fd${idx + 1}>${originalCformList[idx]}</fd${idx + 1}>`);
+    }
+    lines.push('</fdsi>');
+    
+    // Добавляем <fdsc> только если есть результат замыкания
+    if (appState.closureCform && appState.closureCform.length > 0) {
+        lines.push('<fdsc>');
+        for (let idx = 0; idx < appState.closureCform.length; idx++) {
+            lines.push(`    <fd${idx + 1}>${appState.closureCform[idx]}</fd${idx + 1}>`);
+        }
+        lines.push('</fdsc>');
+    }
+    
+    lines.push('</fds>');
+    return lines.join("\n");
+}
+
+// ============================================================
+// РАБОТА С ФАЙЛАМИ
+// ============================================================
 
 async function parseXmlFile(file) {
     return new Promise((resolve, reject) => {
@@ -297,60 +640,27 @@ async function parseXmlFile(file) {
         reader.onload = (e) => {
             try {
                 let xmlString = e.target.result;
-                xmlString = removeFdscElements(xmlString);
                 
-                const tempParser = new DOMParser();
-                const tempDoc = tempParser.parseFromString(xmlString, "text/xml");
-                const fdscElements = tempDoc.querySelectorAll('fdsc');
-                for (const elem of fdscElements) {
-                    elem.remove();
-                }
-                const serializer = new XMLSerializer();
-                xmlString = serializer.serializeToString(tempDoc);
+                xmlString = xmlString.replace(/<fdsc\b[^>]*>[\s\S]*?<\/fdsc>/gi, '');
+                xmlString = xmlString.replace(/<!--\s*FDS Closure\s*-->/gi, '');
+                xmlString = xmlString.replace(/\n\s*\n/g, '\n');
                 
-                const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlString, "text/xml");
-                const parserError = xmlDoc.querySelector("parsererror");
-                if (parserError) {
-                    reject(new Error("Ошибка парсинга XML: " + parserError.textContent));
-                    return;
-                }
-                
-                const fdsiElement = xmlDoc.querySelector('fdsi');
-                if (!fdsiElement) {
-                    reject(new Error("Не найден элемент <fdsi>"));
-                    return;
-                }
-                
+                const fdRegex = /<fd[^>]*>([^<]*)<\/fd[^>]*>/gi;
                 const tmStrings = [];
-                let maxAttr = 0;
-                
-                for (const elem of fdsiElement.children) {
-                    if (elem.tagName && elem.tagName.startsWith('fd')) {
-                        const tmStr = elem.textContent.trim();
-                        if (!tmStr) continue;
+                let match;
+                while ((match = fdRegex.exec(xmlString)) !== null) {
+                    const tmStr = match[1].trim();
+                    if (tmStr) {
                         tmStrings.push(tmStr);
-                        const nums = tmStr.split(/[*\-]/).filter(x => x).map(x => parseInt(x, 10));
-                        if (nums.length) {
-                            maxAttr = Math.max(maxAttr, ...nums);
-                        }
                     }
                 }
                 
-                if (maxAttr === 0) {
-                    reject(new Error("Не найдено ни одной ФЗ"));
+                if (tmStrings.length === 0) {
+                    reject(new Error("Не найдено ни одной ФЗ (нет тегов <fd...>)"));
                     return;
                 }
                 
-                const n = maxAttr;
-                const kubList = [];
-                for (const tmStr of tmStrings) {
-                    kubList.push(tmToCube(tmStr, n));
-                }
-                kubList.push(0);
-                const kc1 = kubList.length - 1;
-                
-                resolve({ kubList, n, kc1 });
+                resolve({ fdsList: tmStrings.map(tm => ({ tm })) });
             } catch (err) {
                 reject(err);
             }
@@ -360,181 +670,40 @@ async function parseXmlFile(file) {
     });
 }
 
-function writeXmlResult(originalKubList, originalKc1, kubResult, ic, n) {
-    const originalSet = new Set(originalKubList.slice(0, originalKc1));
-    const orderedOriginal = [];
-    for (let i = 0; i < originalKc1; i++) {
-        const cube = originalKubList[i];
-        if (originalSet.has(cube)) orderedOriginal.push(cube);
-    }
-    const newCubes = kubResult.filter(cube => !originalSet.has(cube));
-    const orderedResult = orderedOriginal.concat(newCubes);
-    
-    const lines = ['<?xml version="1.0" encoding="UTF-8"?>'];
-    lines.push('<fds>');
-    lines.push('<fdsi>');
-    
-    for (let idx = 0; idx < originalKc1; idx++) {
-        const cubeValue = originalKubList[idx];
-        const tmStr = cubeToTm(cubeValue, n);
-        const bStr = cubeToStr(cubeValue, n);
-        lines.push(`    <fd${idx + 1}>${tmStr}</fd${idx + 1}>   <!-- ${bStr} -->`);
-    }
-    
-    lines.push('</fdsi>');
-    lines.push('<fdsc>');
-    
-    for (let idx = 0; idx < orderedResult.length; idx++) {
-        const cubeValue = orderedResult[idx];
-        const tmStr = cubeToTm(cubeValue, n);
-        const bStr = cubeToStr(cubeValue, n);
-        lines.push(`    <fd${idx + 1}>${tmStr}</fd${idx + 1}>   <!-- ${bStr} -->`);
-    }
-    
-    lines.push('</fdsc>');
-    lines.push('</fds>');
-    
-    return lines.join("\n");
-}
-
-function formatFdsList(cubes, n, startNumber = 1) {
-    let html = '<table class="fds-table">';
-    html += '<thead><tr><th>№</th><th>ТМ-форма</th><th>Битовая форма</th></tr></thead><tbody>';
-    for (let i = 0; i < cubes.length; i++) {
-        const cube = cubes[i];
-        const tmStr = cubeToTm(cube, n);
-        const bStr = cubeToStr(cube, n);
-        html += `<tr>
-            <td class="fd-number">${startNumber + i}</td>
-            <td class="fd-tm">${tmStr}</td>
-            <td class="fd-comment">${bStr}</td>
-        </tr>`;
-    }
-    html += '</tbody></table>';
-    return html;
-}
-
-function updateUI() {
-    const btnSaveAs = document.getElementById('btnSaveAs');
-    const btnCalculate = document.getElementById('btnCalculate');
-    const leftPanel = document.getElementById('leftPanel');
-    const rightPanel = document.getElementById('rightPanel');
-    const statusBar = document.getElementById('statusBar');
-    const fileInfoSpan = document.getElementById('fileInfo');
-    const attrInfoSpan = document.getElementById('attrInfo');
-    const leftPanelHeader = document.getElementById('leftPanelHeader');
-    const rightPanelHeader = document.getElementById('rightPanelHeader');
-    
-    if (!leftPanelHeader || !rightPanelHeader) {
-        console.error("Panel headers not found!");
-        return;
-    }
-    
-    if (appState.originalKubList && appState.originalKubList.length > 0) {
-        btnCalculate.disabled = false;
-        btnSaveAs.disabled = false;
-        
-        leftPanelHeader.textContent = `📋 Исходная система ФЗ (${appState.originalKc1})`;
-        
-        fileInfoSpan.textContent = `Файл: ${appState.currentFile?.name || 'загружен'}`;
-        attrInfoSpan.textContent = `Количество атрибутов: ${appState.originalN}`;
-        
-        const leftHtml = `<div class="scrollable">
-            ${formatFdsList(appState.originalKubList.slice(0, appState.originalKc1), appState.originalN, 1)}
-        </div>`;
-        leftPanel.innerHTML = leftHtml;
-    } else {
-        btnCalculate.disabled = true;
-        btnSaveAs.disabled = true;
-        leftPanel.innerHTML = '<div class="placeholder">Нет загруженных данных</div>';
-        
-        leftPanelHeader.textContent = `📋 Исходная система ФЗ`;
-        
-        fileInfoSpan.textContent = 'Файл: не загружен';
-        attrInfoSpan.textContent = 'Количество атрибутов: —';
-    }
-    
-    if (appState.closureResult && appState.closureResult.length > 0) {
-        const originalSet = new Set(appState.originalKubList.slice(0, appState.originalKc1));
-        const orderedOriginal = [];
-        for (let i = 0; i < appState.originalKc1; i++) {
-            const cube = appState.originalKubList[i];
-            if (originalSet.has(cube)) orderedOriginal.push(cube);
-        }
-        const newCubes = appState.closureResult.filter(cube => !originalSet.has(cube));
-        const orderedResult = orderedOriginal.concat(newCubes);
-        
-        rightPanelHeader.textContent = `🎯 Замыкание системы ФЗ (${orderedResult.length})`;
-        
-        const rightHtml = `<div class="scrollable">
-            ${formatFdsList(orderedResult, appState.originalN, 1)}
-        </div>`;
-        rightPanel.innerHTML = rightHtml;
-    } else {
-        rightPanelHeader.textContent = `🎯 Замыкание системы ФЗ`;
-        rightPanel.innerHTML = '<div class="placeholder">Нет результатов</div>';
-    }
-    
-    statusBar.textContent = appState.resultSaved ? 
-        `Готов. Файл: ${appState.currentFile?.name || 'не загружен'}` :
-        `Результат не сохранён. Файл: ${appState.currentFile?.name || 'не загружен'}`;
-}
-
-async function openFile() {
-    const fileInput = document.getElementById('fileInput');
-    if (!fileInput) {
-        console.error("fileInput not found");
-        return;
-    }
-    
-    fileInput.value = '';
-    fileInput.click();
-    
-    fileInput.onchange = async (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        
-        try {
-            const { kubList, n, kc1 } = await parseXmlFile(file);
-            appState.currentFile = file;
-            appState.originalKubList = kubList;
-            appState.originalN = n;
-            appState.originalKc1 = kc1;
-            appState.closureCubes = null;
-            appState.closureResult = null;
-            appState.resultSaved = true;
-            updateUI();
-            document.getElementById('statusBar').textContent = `Файл загружен: ${file.name}`;
-        } catch (err) {
-            document.getElementById('statusBar').textContent = `Ошибка: ${err.message}`;
-            console.error(err);
-        }
-    };
+function loadFromFile(file) {
+    parseXmlFile(file).then(({ fdsList }) => {
+        clearAllPanels();
+        appState.currentFile = file;
+        appState.originalFds = fdsList;
+        appState.isDataValid = false;
+        appState.canonicalFds = null;
+        appState.numericFds = null;
+        appState.numericN = null;
+        appState.closureCform = null;
+        updateUI();
+        document.getElementById('statusBar').textContent = `Файл загружен: ${file.name}. Нажмите «Проверить» для продолжения.`;
+        document.getElementById('fileInfo').textContent = `Файл: ${file.name}`;
+    }).catch(err => alert("Ошибка загрузки файла: " + err.message));
 }
 
 async function saveAsFile() {
-    if (!appState.closureCubes) {
-        alert("Нет результатов для сохранения. Сначала выполните расчёт.");
+    if (appState.originalFds.length === 0) {
+        alert("Нет данных для сохранения. Добавьте ФЗ или откройте файл.");
         return;
     }
     
-    const xmlContent = writeXmlResult(
-        appState.originalKubList,
-        appState.originalKc1,
-        appState.closureCubes,
-        appState.closureCubes.length,
-        appState.originalN
-    );
+    let suggestedName = 'fds.xml';
+    if (appState.currentFile) {
+        suggestedName = appState.currentFile.name;
+    }
     
+    const xmlContent = generateXmlContent();
     const blob = new Blob([xmlContent], { type: 'application/xml' });
     
     try {
         const handle = await window.showSaveFilePicker({
-            suggestedName: appState.currentFile ? appState.currentFile.name : 'fds.xml',
-            types: [{
-                description: 'XML files',
-                accept: { 'application/xml': ['.xml'] }
-            }]
+            suggestedName: suggestedName,
+            types: [{ description: 'XML files', accept: { 'application/xml': ['.xml'] } }]
         });
         const writable = await handle.createWritable();
         await writable.write(blob);
@@ -544,80 +713,173 @@ async function saveAsFile() {
         document.getElementById('statusBar').textContent = `Сохранено в: ${handle.name}`;
     } catch (err) {
         if (err.name !== 'AbortError') {
-            console.error("Save error:", err);
+            console.error(err);
             alert("Ошибка при сохранении: " + err.message);
         }
     }
 }
 
-function calculate() {
-    if (!appState.originalKubList) {
-        alert("Сначала откройте файл с исходными данными.");
-        return;
-    }
-    
-    document.getElementById('statusBar').textContent = "Вычисление замыкания...";
-    console.log("=== CALCULATE START ===");
-    console.log("originalKubList:", appState.originalKubList);
-    console.log("originalN:", appState.originalN);
-    console.log("originalKc1:", appState.originalKc1);
-    
-    setTimeout(() => {
-        try {
-            const { kub, ic } = kimpl1(appState.originalKubList, appState.originalN, appState.originalKc1);
-            console.log("Result from kimpl1:", { kub, ic });
-            appState.closureCubes = kub;
-            appState.closureResult = kub;
-            appState.resultSaved = false;
-            updateUI();
-            document.getElementById('statusBar').textContent = `Вычисление завершено. Всего ФЗ: ${ic}`;
-        } catch (err) {
-            console.error("Error in calculate:", err);
-            document.getElementById('statusBar').textContent = `Ошибка: ${err.message}`;
-            alert("Ошибка при вычислении: " + err.message);
-        }
-    }, 100);
-}
+// ============================================================
+// СПРАВКА (ДВУХПАНЕЛЬНАЯ С ОГЛАВЛЕНИЕМ)
+// ============================================================
 
-function quitApp() {
-    if (!appState.resultSaved && appState.closureCubes !== null) {
-        const answer = confirm("Результат замыкания не был сохранён.\nСохранить результат в файл?");
-        if (answer) {
-            saveAsFile();
-            setTimeout(() => {
-                if (confirm("Вы уверены, что хотите выйти?")) {
-                    window.close();
+let helpPages = [];
+let currentHelpPageIndex = 0;
+
+async function loadHelp() {
+    const helpModal = document.getElementById('helpModal');
+    const helpContent = document.getElementById('helpContent');
+    const helpToc = document.getElementById('helpToc');
+    
+    helpModal.style.display = 'flex';
+    helpContent.innerHTML = '<p>Загрузка справки...</p>';
+    helpToc.innerHTML = '';
+    
+    try {
+        const response = await fetch('README.md');
+        if (!response.ok) {
+            throw new Error('Файл справки не найден');
+        }
+        const markdown = await response.text();
+        const html = marked.parse(markdown);
+        
+        const pages = [];
+        const sections = html.split(/(<h2>.*?<\/h2>)/);
+        let currentPage = '';
+        let pageTitle = 'Введение';
+        
+        for (let i = 0; i < sections.length; i++) {
+            const section = sections[i];
+            if (section.startsWith('<h2>')) {
+                if (currentPage.trim()) {
+                    pages.push({ title: pageTitle, content: currentPage });
                 }
-            }, 200);
-            return;
+                pageTitle = section.replace(/<\/?h2>/g, '').trim();
+                currentPage = section;
+            } else {
+                currentPage += section;
+            }
         }
-    }
-    if (confirm("Вы уверены, что хотите выйти?")) {
-        window.close();
+        if (currentPage.trim()) {
+            pages.push({ title: pageTitle, content: currentPage });
+        }
+        
+        if (pages.length === 0) {
+            pages.push({ title: 'Справка', content: html });
+        }
+        
+        helpPages = pages;
+        currentHelpPageIndex = 0;
+        renderHelpToc();
+        renderHelpPage();
+        
+    } catch (err) {
+        helpContent.innerHTML = `<p style="color: red;">Ошибка загрузки справки: ${err.message}</p>
+        <p>Убедитесь, что файл README.md находится в той же папке, что и index.html.</p>`;
     }
 }
 
-// Инициализация интерфейса
-document.getElementById('btnOpen').addEventListener('click', openFile);
+function renderHelpToc() {
+    const helpToc = document.getElementById('helpToc');
+    let html = '<div style="font-weight: 600; color: #6c757d; font-size: 13px; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Содержание</div>';
+    for (let i = 0; i < helpPages.length; i++) {
+        const active = i === currentHelpPageIndex ? 'active' : '';
+        html += `<div class="help-toc-item ${active}" data-page="${i}">${helpPages[i].title}</div>`;
+    }
+    helpToc.innerHTML = html;
+    
+    document.querySelectorAll('.help-toc-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const index = parseInt(item.dataset.page);
+            if (index !== currentHelpPageIndex) {
+                currentHelpPageIndex = index;
+                renderHelpToc();
+                renderHelpPage();
+            }
+        });
+    });
+}
+
+function renderHelpPage() {
+    const helpContent = document.getElementById('helpContent');
+    const page = helpPages[currentHelpPageIndex];
+    helpContent.innerHTML = page.content;
+    helpContent.scrollTop = 0;
+}
+
+function closeHelpModal() {
+    document.getElementById('helpModal').style.display = 'none';
+}
+
+// ============================================================
+// ИНИЦИАЛИЗАЦИЯ ИНТЕРФЕЙСА
+// ============================================================
+
+function updateUI() {
+    const btnCheck = document.getElementById('btnCheck');
+    const btnCalculate = document.getElementById('btnCalculate');
+    const btnSaveAs = document.getElementById('btnSaveAs');
+    const fileInfoSpan = document.getElementById('fileInfo');
+    const versionSpan = document.getElementById('versionInfo');
+    
+    if (versionSpan) versionSpan.textContent = `Версия: ${APP_VERSION}`;
+    
+    if (appState.originalFds.length > 0) {
+        btnCheck.disabled = false;
+        btnSaveAs.disabled = false;
+        fileInfoSpan.textContent = `Файл: ${appState.currentFile?.name || 'ручной ввод'}`;
+        renderEditableTable();
+    } else {
+        btnCheck.disabled = true;
+        btnCalculate.disabled = true;
+        btnSaveAs.disabled = true;
+        fileInfoSpan.textContent = 'Файл: не загружен';
+        document.getElementById('leftPanel').innerHTML = '<div class="placeholder">Нет данных. Добавьте ФЗ или откройте файл.</div>';
+        document.getElementById('centerPanel').innerHTML = '<div class="placeholder">Нажмите «Проверить» после ввода данных.</div>';
+        document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
+        document.getElementById('attrInfo').textContent = 'Количество атрибутов: —';
+    }
+    if (appState.isDataValid) {
+        btnCalculate.disabled = false;
+        renderCenterPanel();
+    } else if (appState.originalFds.length > 0) {
+        btnCalculate.disabled = true;
+        document.getElementById('centerPanel').innerHTML = '<div class="placeholder">Нажмите «Проверить» для проверки данных.</div>';
+    }
+    if (appState.closureCform && appState.closureCform.length > 0) {
+        btnSaveAs.disabled = false;
+    }
+}
+
+const fileInput = document.getElementById('fileInput');
+fileInput.onchange = (e) => {
+    const file = e.target.files[0];
+    if (file) loadFromFile(file);
+};
+
+document.getElementById('btnOpen').addEventListener('click', () => {
+    clearAllPanels();
+    fileInput.value = '';
+    fileInput.click();
+});
+document.getElementById('btnAddRow').addEventListener('click', addEmptyFd);
+document.getElementById('btnCheck').addEventListener('click', checkData);
 document.getElementById('btnCalculate').addEventListener('click', calculate);
 document.getElementById('btnSaveAs').addEventListener('click', saveAsFile);
-document.getElementById('btnQuit').addEventListener('click', quitApp);
+document.getElementById('btnHelp').addEventListener('click', loadHelp);
+document.querySelector('.close-modal').addEventListener('click', closeHelpModal);
+document.getElementById('helpModal').addEventListener('click', (e) => {
+    if (e.target === document.getElementById('helpModal')) {
+        closeHelpModal();
+    }
+});
 
 // Горячие клавиши
 document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.key === 'o') {
-        e.preventDefault();
-        openFile();
-    } else if (e.ctrlKey && e.key === 'r') {
-        e.preventDefault();
-        calculate();
-    } else if (e.ctrlKey && e.shiftKey && e.key === 'S') {
-        e.preventDefault();
-        saveAsFile();
-    } else if (e.ctrlKey && e.key === 'q') {
-        e.preventDefault();
-        quitApp();
-    }
+    if (e.ctrlKey && e.key === 'o') { e.preventDefault(); document.getElementById('btnOpen').click(); }
+    else if (e.ctrlKey && e.key === 'r') { e.preventDefault(); if (!document.getElementById('btnCalculate').disabled) calculate(); }
+    else if (e.ctrlKey && e.shiftKey && e.key === 'S') { e.preventDefault(); if (!document.getElementById('btnSaveAs').disabled) saveAsFile(); }
+    else if (e.key === 'F1') { e.preventDefault(); loadHelp(); }
 });
 
 updateUI();
