@@ -1,10 +1,10 @@
 // script.js
 /**
- * KIMPL1 - Вычисление замыкания системы функциональных зависимостей
- * Версия 11.22 (исправлено удаление поглощённых кубов)
+ * Вычисление замыкания системы функциональных зависимостей
+ * Версия 12.0 - алгоритм на основе правил вывода
  */
 
-const APP_VERSION = "11.22";
+const APP_VERSION = "12.0";
 
 // ============================================================
 // Хранилище данных
@@ -24,314 +24,162 @@ let appState = {
 };
 
 // ============================================================
-// АЛГОРИТМИЧЕСКАЯ ЧАСТЬ
+// АЛГОРИТМ ВЫЧИСЛЕНИЯ ЗАМЫКАНИЯ (на основе правил вывода)
 // ============================================================
 
-function krang(val, kubl, l, n, ib, ie) {
-    let k0 = 0, k1 = 0, k2 = 0, k3 = 0;
-    if (!val || val.length === 0) {
-        return { val, kubl, k0, k1, k2, k3 };
+function getDeterminants(cube, n) {
+    const det = [];
+    for (let i = 0; i < n; i++) {
+        const digit = (cube >> (i * 2)) & 3;
+        if (digit === 1) det.push(i + 1);
     }
-    let swapped = true;
-    while (swapped) {
-        swapped = false;
-        for (let i = ib - 1; i < ie - 1; i++) {
-            // Исправлено: правильный порядок сортировки
-            let cond = (l === 0 && val[i] > val[i + 1]) || (l === 1 && val[i] < val[i + 1]);
-            if (cond) {
-                [val[i], val[i + 1]] = [val[i + 1], val[i]];
-                [kubl[i], kubl[i + 1]] = [kubl[i + 1], kubl[i]];
-                swapped = true;
-            }
-        }
-    }
-    for (let i = ib - 1; i < ie; i++) {
-        if (val[i] === 1) k1++;
-        else if (val[i] === 2) k2++;
-        else if (val[i] === 3) k3++;
-        else if (val[i] === 0) k0++;
-    }
-    return { val, kubl, k0, k1, k2, k3 };
+    return det;
 }
 
-function tmToCube(tmStr, n) {
-    if (!n || !tmStr) return 0;
-    const parts = tmStr.split('-');
-    const determinantPart = parts[0];
-    const functionPart = parts.length > 1 ? parts[1] : "";
-    let determinants = [];
-    if (determinantPart.includes('*')) {
-        determinants = determinantPart.split('*').map(x => parseInt(x, 10));
-    } else {
-        determinants = determinantPart ? [parseInt(determinantPart, 10)] : [];
+function getFunctions(cube, n) {
+    const func = [];
+    for (let i = 0; i < n; i++) {
+        const digit = (cube >> (i * 2)) & 3;
+        if (digit === 2) func.push(i + 1);
     }
-    let functions = [];
-    if (functionPart) {
-        if (functionPart.includes('-')) {
-            functions = functionPart.split('-').map(x => parseInt(x, 10));
-        } else {
-            functions = [parseInt(functionPart, 10)];
-        }
-    }
-    let value = 0;
+    return func;
+}
+
+function createCube(determinants, functions, n) {
+    let cube = 0;
     for (let i = 0; i < n; i++) {
         const attrNum = i + 1;
-        let digit;
+        let digit = 3; // по умолчанию не используется
         if (determinants.includes(attrNum)) {
             digit = 1;
         } else if (functions.includes(attrNum)) {
             digit = 2;
-        } else {
-            digit = 3;
         }
-        value |= (digit << (i * 2));
+        cube |= (digit << (i * 2));
     }
-    return value;
+    return cube;
 }
 
-function cubeToTm(cubeValue, n) {
-    if (!n) return "";
-    const determinants = [];
-    const functions = [];
-    for (let i = 0; i < n; i++) {
-        const digit = (cubeValue >> (i * 2)) & 3;
-        if (digit === 1) determinants.push((i + 1).toString());
-        else if (digit === 2) functions.push((i + 1).toString());
+function isTrivial(cube, n) {
+    const det = getDeterminants(cube, n);
+    const func = getFunctions(cube, n);
+    for (const attr of func) {
+        if (!det.includes(attr)) return false;
     }
-    if (functions.length === 0) return "";
-    return determinants.join("*") + "-" + functions.join("-");
+    return true;
 }
 
-function countValue(cube, val, n) {
-    let count = 0;
-    for (let i = 0; i < n; i++) {
-        if (((cube >> (i * 2)) & 3) === val) count++;
+function containsFd(list, cube) {
+    for (const fd of list) {
+        if (fd === cube) return true;
     }
-    return count;
+    return false;
 }
 
-function isCubeAbsorbed(absorber, absorbed, n) {
-    // absorber поглощает absorbed, если все атрибуты absorbed
-    // содержатся в absorber
-    const r = absorber & absorbed;
-    return r === absorbed && absorber !== absorbed;
-}
-
-function kimpl1(kubList, n, kc1) {
-    if (!n || kc1 === 0) return { kub: [], ic: 0 };
+function applyTransitivity(fd1, fd2, n) {
+    // fd1: X→Y, fd2: Y→Z, результат: X→Z
+    const det1 = getDeterminants(fd1, n);
+    const func1 = getFunctions(fd1, n);
+    const det2 = getDeterminants(fd2, n);
+    const func2 = getFunctions(fd2, n);
     
-    const g = n * 2;
-    let kub = kubList.slice(0, kc1);
-    let ic = kc1;
-    let va = new Array(ic).fill(1);
-    let k2 = 1;
-    let k3 = 0;
-    let ir = 0;
-    let swi = 1;
-    let swout = 1;
-    let l = 0;
-    let cz1 = [];
-    let cz2 = [];
-    let swz = 1;
+    if (func1.length === 0 || det2.length === 0) return null;
     
-    let iteration = 0;
-    while (swout) {
-        iteration++;
-        let changed = false;
-        const ik1 = ic - 1;
-        const ih1 = k3;
-        
-        // Шаг 1: Склеивание (∗-произведение)
-        for (let i1 = ih1; i1 < ik1; i1++) {
-            const x = kub[i1];
-            let ih2;
-            if (swi || (!swi && (i1 + 1 > k2 + k3))) {
-                ih2 = i1 + 1;
-            } else {
-                ih2 = k2 + k3;
-            }
-            
-            for (let i2 = ih2; i2 < ic; i2++) {
-                const y = kub[i2];
-                let j = 0;
-                let r = x & y;
-                let p = 7;
-                for (let iBit = 0; iBit < g; iBit += 2) {
-                    if (((r >> iBit) & 3) === 0) {
-                        j = iBit / 2;
-                        p++;
-                    }
-                }
-                
-                // Если ровно одно различие
-                if (p === 8 && j >= 0) {
-                    // Создаём новый куб, устанавливая биты в 11
-                    r = r | (3 << (j * 2));
-                    let swkub = 1;
-                    
-                    // Проверяем, не существует ли уже такой куб
-                    for (let i3 = 0; i3 < ic; i3++) {
-                        const z = kub[i3];
-                        const yTemp = r & z;
-                        if (r === z || yTemp === r) {
-                            swkub = 0;
-                            break;
-                        }
-                    }
-                    
-                    if (swkub && ir > 0) {
-                        for (let i3 = 0; i3 < ir; i3++) {
-                            const z = swz ? cz1[i3] : cz2[i3];
-                            const yTemp = r & z;
-                            if (r === z || yTemp === r) {
-                                swkub = 0;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (swkub) {
-                        ir++;
-                        if (swz) {
-                            cz1.push(r);
-                        } else {
-                            cz2.push(r);
-                        }
-                        changed = true;
-                    }
-                }
-            }
+    // Проверяем, что все атрибуты из func1 есть в det2
+    for (const attr of func1) {
+        if (!det2.includes(attr)) return null;
+    }
+    
+    // Проверяем, что результат не тривиальный
+    const newCube = createCube(det1, func2, n);
+    if (isTrivial(newCube, n)) return null;
+    
+    return newCube;
+}
+
+function applyPseudoTransitivity(fd1, fd2, n) {
+    // fd1: X→Y, fd2: Y*Z→W, результат: X*Z→W
+    const det1 = getDeterminants(fd1, n);
+    const func1 = getFunctions(fd1, n);
+    const det2 = getDeterminants(fd2, n);
+    const func2 = getFunctions(fd2, n);
+    
+    if (func1.length === 0 || det2.length === 0) return null;
+    
+    // Проверяем, что все атрибуты из func1 есть в det2
+    for (const attr of func1) {
+        if (!det2.includes(attr)) return null;
+    }
+    
+    // Формируем новые детерминанты: X + (Z \ Y)
+    const newDet = [...det1];
+    for (const attr of det2) {
+        if (!func1.includes(attr) && !newDet.includes(attr)) {
+            newDet.push(attr);
         }
-        
-        swi = 0;
-        if (!changed) {
-            swout = 0;
+    }
+    
+    // Проверяем, что результат не тривиальный
+    const newCube = createCube(newDet, func2, n);
+    if (isTrivial(newCube, n)) return null;
+    
+    // Проверяем, что новые детерминанты не совпадают с func2
+    // (иначе это тривиальная зависимость)
+    let allInDet = true;
+    for (const attr of func2) {
+        if (!newDet.includes(attr)) {
+            allInDet = false;
             break;
         }
-        
-        // Шаг 2: Удаление поглощённых кубов
-        if (ir > 0) {
-            const tempCubes = swz ? cz1 : cz2;
-            const tempVs = new Array(ir).fill(1);
-            
-            // Сортируем кубы по "общности" (кубы с большим количеством 3 идут первыми)
-            const indexedCubes = tempCubes.map((cube, idx) => ({ cube, idx }));
-            indexedCubes.sort((a, b) => {
-                const count3a = countValue(a.cube, 3, n);
-                const count3b = countValue(b.cube, 3, n);
-                if (count3b !== count3a) return count3b - count3a;
-                return a.cube - b.cube;
-            });
-            
-            // Проверяем поглощение
-            for (let i = 0; i < ir; i++) {
-                if (tempVs[indexedCubes[i].idx] === 0) continue;
-                const x = indexedCubes[i].cube;
-                for (let j = i + 1; j < ir; j++) {
-                    if (tempVs[indexedCubes[j].idx] === 0) continue;
-                    const y = indexedCubes[j].cube;
-                    
-                    // Проверяем поглощение в обе стороны
-                    if (isCubeAbsorbed(x, y, n)) {
-                        // x поглощает y
-                        tempVs[indexedCubes[j].idx] = 0;
-                    } else if (isCubeAbsorbed(y, x, n)) {
-                        // y поглощает x
-                        tempVs[indexedCubes[i].idx] = 0;
-                        break;
-                    }
-                }
-            }
-            
-            // Формируем новый список кубов
-            const newCubes = [];
-            for (let i = 0; i < ir; i++) {
-                if (tempVs[i] === 1) {
-                    newCubes.push(tempCubes[i]);
-                }
-            }
-            
-            ir = newCubes.length;
-            if (swz) cz1 = newCubes;
-            else cz2 = newCubes;
-        }
-        
-        // Шаг 3: Обновление основных кубов
-        if (ir > 0) {
-            const newCubes = swz ? cz1 : cz2;
-            
-            // Сортируем новые кубы
-            const sortedCubes = newCubes.map((cube, idx) => ({ cube, idx }));
-            sortedCubes.sort((a, b) => {
-                const count3a = countValue(a.cube, 3, n);
-                const count3b = countValue(b.cube, 3, n);
-                if (count3b !== count3a) return count3b - count3a;
-                return a.cube - b.cube;
-            });
-            
-            const sortedValues = sortedCubes.map(item => item.cube);
-            
-            // Обновляем va для новых кубов
-            const newVa = new Array(sortedValues.length).fill(0);
-            for (let i = 0; i < sortedValues.length; i++) {
-                let hasDet = false;
-                let hasFunc = false;
-                for (let j = 0; j < n; j++) {
-                    const val = (sortedValues[i] >> (j * 2)) & 3;
-                    if (val === 1) hasDet = true;
-                    if (val === 2) hasFunc = true;
-                }
-                if (hasDet && hasFunc) newVa[i] = 3;
-                else if (hasDet) newVa[i] = 1;
-                else if (hasFunc) newVa[i] = 2;
-                else newVa[i] = 0;
-            }
-            
-            // Сортируем все кубы
-            const krangResult = krang(newVa, sortedValues, l, n, 1, sortedValues.length);
-            va = krangResult.val;
-            kub = krangResult.kubl;
-            
-            k2 = krangResult.k2;
-            k3 = krangResult.k3;
-            
-            ic = k3 + k2 + ir;
-            const newKub = kub.slice(0, k3 + k2).concat(sortedValues);
-            kub = newKub;
-        }
-        
-        cz1 = [];
-        cz2 = [];
-        swz = 1;
-        ir = 0;
-        k2 = 1;
-        k3 = 0;
-        l = 1 - l; // переключение для сортировки
     }
+    if (allInDet) return null;
     
-    // Финальная очистка от поглощённых кубов
-    const finalVs = new Array(ic).fill(1);
-    for (let i = 0; i < ic; i++) {
-        if (finalVs[i] === 0) continue;
-        for (let j = i + 1; j < ic; j++) {
-            if (finalVs[j] === 0) continue;
-            if (isCubeAbsorbed(kub[i], kub[j], n)) {
-                finalVs[j] = 0;
-            } else if (isCubeAbsorbed(kub[j], kub[i], n)) {
-                finalVs[i] = 0;
-                break;
+    return newCube;
+}
+
+function computeClosure(fds, n) {
+    if (!n || fds.length === 0) return [];
+    
+    // Копируем все исходные ФЗ
+    let closure = [...fds];
+    let changed = true;
+    let iteration = 0;
+    
+    while (changed && iteration < 100) {
+        changed = false;
+        iteration++;
+        const newFds = [];
+        const currentLength = closure.length;
+        
+        for (let i = 0; i < currentLength; i++) {
+            for (let j = 0; j < currentLength; j++) {
+                if (i === j) continue;
+                
+                const fd1 = closure[i];
+                const fd2 = closure[j];
+                
+                // Транзитивность: X→Y и Y→Z => X→Z
+                const result1 = applyTransitivity(fd1, fd2, n);
+                if (result1 !== null && !containsFd(closure, result1) && !containsFd(newFds, result1)) {
+                    newFds.push(result1);
+                    changed = true;
+                }
+                
+                // Псевдотранзитивность: X→Y и Y*Z→W => X*Z→W
+                const result2 = applyPseudoTransitivity(fd1, fd2, n);
+                if (result2 !== null && !containsFd(closure, result2) && !containsFd(newFds, result2)) {
+                    newFds.push(result2);
+                    changed = true;
+                }
             }
+        }
+        
+        if (changed) {
+            closure = closure.concat(newFds);
         }
     }
     
-    const finalKub = [];
-    for (let i = 0; i < ic; i++) {
-        if (finalVs[i] === 1) {
-            finalKub.push(kub[i]);
-        }
-    }
-    
-    return { kub: finalKub, ic: finalKub.length };
+    return closure;
 }
 
 // ============================================================
@@ -414,6 +262,24 @@ function escapeHtml(str) {
     });
 }
 
+function groupByDeterminants(fdsList) {
+    const groups = {};
+    for (const fd of fdsList) {
+        const parts = fd.split('-');
+        const det = parts[0];
+        const func = parts[1];
+        if (!groups[det]) groups[det] = [];
+        groups[det].push(func);
+    }
+    
+    const result = [];
+    for (const det in groups) {
+        const funcs = groups[det].sort();
+        result.push(det + '-' + funcs.join('-'));
+    }
+    return result.sort();
+}
+
 function renderEditableTable() {
     const leftPanel = document.getElementById('leftPanel');
     if (appState.originalFds.length === 0) {
@@ -476,14 +342,16 @@ function renderCenterPanel() {
         centerPanel.innerHTML = '<div class="placeholder">Нажмите «Проверить» для проверки данных.</div>';
         return;
     }
+    
+    // Группируем по детерминантам для отображения в составной форме
+    const grouped = groupByDeterminants(appState.originalFds.map(fd => fd.tm));
+    
     let html = '<table class="fds-table">';
     html += '<tbody>';
-    for (let i = 0; i < appState.originalFds.length; i++) {
-        const fd = appState.originalFds[i];
-        if (!fd.tm) continue;
+    for (let i = 0; i < grouped.length; i++) {
         html += `<tr>
             <td class="fd-number">${i + 1}</td>
-            <td class="fd-tm">${escapeHtml(fd.tm)}</td>
+            <td class="fd-tm">${escapeHtml(grouped[i])}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -497,12 +365,16 @@ function renderClosureTable() {
         rightPanel.innerHTML = '<div class="placeholder">Нет результатов. Нажмите «Рассчитать».</div>';
         return;
     }
+    
+    // Группируем по детерминантам для отображения в составной форме
+    const grouped = groupByDeterminants(appState.closureCform);
+    
     let html = '<table class="fds-table">';
     html += '<tbody>';
-    for (let i = 0; i < appState.closureCform.length; i++) {
+    for (let i = 0; i < grouped.length; i++) {
         html += `<tr>
             <td class="fd-number">${i + 1}</td>
-            <td class="fd-tm">${escapeHtml(appState.closureCform[i])}</td>
+            <td class="fd-tm">${escapeHtml(grouped[i])}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -581,26 +453,21 @@ function clearAllPanels() {
 function validateCForm(tmStr) {
     if (!tmStr || tmStr.trim() === '') return false;
     
-    // Проверка на недопустимые символы
     const invalidChars = tmStr.match(/[^a-zA-Z0-9_*\-]/);
     if (invalidChars) {
         alert(`Недопустимый символ: "${invalidChars[0]}" в строке "${tmStr}"`);
         return false;
     }
     
-    // Проверка на пустую левую часть
     const parts = tmStr.split('-');
     if (!parts[0] || parts[0].trim() === '') {
         alert(`Пустая левая часть в "${tmStr}"`);
         return false;
     }
-    
-    // Проверка на пустую правую часть
     if (parts.length < 2 || !parts[1] || parts[1].trim() === '') {
         alert(`Пустая правая часть в "${tmStr}"`);
         return false;
     }
-    
     return true;
 }
 
@@ -616,7 +483,6 @@ function checkData() {
         return;
     }
     
-    // Валидация каждой ФЗ
     for (const fd of appState.originalFds) {
         if (!validateCForm(fd.tm)) return;
     }
@@ -666,9 +532,8 @@ function calculate() {
         return;
     }
     
-    const numericTmList = appState.numericFds.map(fd => fd.tm);
     const n = appState.numericN;
-    const kc1 = numericTmList.length;
+    const numericTmList = appState.numericFds.map(fd => fd.tm);
     const kubList = numericTmList.map(tm => tmToCube(tm, n));
     
     const btnCalculate = document.getElementById('btnCalculate');
@@ -678,17 +543,24 @@ function calculate() {
     
     setTimeout(() => {
         try {
-            const { kub, ic } = kimpl1(kubList, n, kc1);
+            // Вычисляем замыкание
+            const closureCubes = computeClosure(kubList, n);
+            
+            // Преобразуем обратно в строки
             const closureNumeric = [];
-            for (let i = 0; i < ic; i++) {
-                const tmStr = cubeToTm(kub[i], n);
+            for (const cube of closureCubes) {
+                const tmStr = cubeToTm(cube, n);
                 if (tmStr) closureNumeric.push(tmStr);
             }
+            
             appState.closureResult = closureNumeric;
-            appState.closureCform = closureNumeric.map(num => numericToCform(num, appState.attrMapReverse)).filter(c => c);
+            appState.closureCform = closureNumeric
+                .map(num => numericToCform(num, appState.attrMapReverse))
+                .filter(c => c);
+            
             appState.resultSaved = false;
             renderClosureTable();
-            document.getElementById('statusBar').textContent = `Вычисление завершено. Всего ФЗ: ${ic}`;
+            document.getElementById('statusBar').textContent = `Вычисление завершено. Всего ФЗ: ${appState.closureCform.length}`;
             btnCalculate.disabled = false;
             btnCalculate.innerHTML = '⚡ Рассчитать';
         } catch (err) {
@@ -699,6 +571,58 @@ function calculate() {
             btnCalculate.innerHTML = '⚡ Рассчитать';
         }
     }, 100);
+}
+
+// ============================================================
+// УТИЛИТЫ ДЛЯ РАБОТЫ С КУБАМИ
+// ============================================================
+
+function tmToCube(tmStr, n) {
+    if (!n || !tmStr) return 0;
+    const parts = tmStr.split('-');
+    const determinantPart = parts[0];
+    const functionPart = parts.length > 1 ? parts[1] : "";
+    let determinants = [];
+    if (determinantPart.includes('*')) {
+        determinants = determinantPart.split('*').map(x => parseInt(x, 10));
+    } else {
+        determinants = determinantPart ? [parseInt(determinantPart, 10)] : [];
+    }
+    let functions = [];
+    if (functionPart) {
+        if (functionPart.includes('-')) {
+            functions = functionPart.split('-').map(x => parseInt(x, 10));
+        } else {
+            functions = [parseInt(functionPart, 10)];
+        }
+    }
+    let value = 0;
+    for (let i = 0; i < n; i++) {
+        const attrNum = i + 1;
+        let digit;
+        if (determinants.includes(attrNum)) {
+            digit = 1;
+        } else if (functions.includes(attrNum)) {
+            digit = 2;
+        } else {
+            digit = 3;
+        }
+        value |= (digit << (i * 2));
+    }
+    return value;
+}
+
+function cubeToTm(cubeValue, n) {
+    if (!n) return "";
+    const determinants = [];
+    const functions = [];
+    for (let i = 0; i < n; i++) {
+        const digit = (cubeValue >> (i * 2)) & 3;
+        if (digit === 1) determinants.push((i + 1).toString());
+        else if (digit === 2) functions.push((i + 1).toString());
+    }
+    if (functions.length === 0) return "";
+    return determinants.join("*") + "-" + functions.join("-");
 }
 
 // ============================================================
@@ -714,7 +638,6 @@ function generateXmlContent() {
     }
     lines.push('</fdsi>');
     
-    // Добавляем <fdsc> только если есть результат замыкания
     if (appState.closureCform && appState.closureCform.length > 0) {
         lines.push('<fdsc>');
         for (let idx = 0; idx < appState.closureCform.length; idx++) {
@@ -737,29 +660,21 @@ async function parseXmlFile(file) {
         reader.onload = (e) => {
             try {
                 let xmlString = e.target.result;
-                
-                // Удаляем комментарии
                 xmlString = xmlString.replace(/<!--[\s\S]*?-->/g, '');
-                
-                // Удаляем <fdsc> блоки
                 xmlString = xmlString.replace(/<fdsc\b[^>]*>[\s\S]*?<\/fdsc>/gi, '');
                 
-                // Ищем все теги <fd...> кроме <fds>, <fdsi>, <fdsc>
                 const fdRegex = /<fd(?!s)[^>]*>([^<]*)<\/fd[^>]*>/gi;
                 const tmStrings = [];
                 let match;
                 while ((match = fdRegex.exec(xmlString)) !== null) {
                     const tmStr = match[1].trim();
-                    if (tmStr) {
-                        tmStrings.push(tmStr);
-                    }
+                    if (tmStr) tmStrings.push(tmStr);
                 }
                 
                 if (tmStrings.length === 0) {
                     reject(new Error("Не найдено ни одной ФЗ (нет тегов <fd...>)"));
                     return;
                 }
-                
                 resolve({ fdsList: tmStrings.map(tm => ({ tm })) });
             } catch (err) {
                 reject(err);
@@ -788,7 +703,7 @@ function loadFromFile(file) {
 
 async function saveAsFile() {
     if (appState.originalFds.length === 0) {
-        alert("Нет данных для сохранения. Добавьте ФЗ или откройте файл.");
+        alert("Нет данных для сохранения.");
         return;
     }
     
@@ -820,31 +735,6 @@ async function saveAsFile() {
 }
 
 // ============================================================
-// КОПИРОВАНИЕ РЕЗУЛЬТАТА
-// ============================================================
-
-function copyClosureToClipboard() {
-    if (!appState.closureCform || appState.closureCform.length === 0) {
-        alert("Нет результата для копирования.");
-        return;
-    }
-    
-    const text = appState.closureCform.join('\n');
-    navigator.clipboard.writeText(text).then(() => {
-        document.getElementById('statusBar').textContent = "Результат скопирован в буфер обмена.";
-    }).catch(() => {
-        // fallback
-        const textarea = document.createElement('textarea');
-        textarea.value = text;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        document.getElementById('statusBar').textContent = "Результат скопирован в буфер обмена.";
-    });
-}
-
-// ============================================================
 // СПРАВКА
 // ============================================================
 
@@ -862,9 +752,7 @@ async function loadHelp() {
     
     try {
         const response = await fetch('README.md');
-        if (!response.ok) {
-            throw new Error('Файл справки не найден');
-        }
+        if (!response.ok) throw new Error('Файл справки не найден');
         const markdown = await response.text();
         const html = marked.parse(markdown);
         
@@ -907,10 +795,8 @@ async function loadHelp() {
         currentHelpPageIndex = 0;
         renderHelpToc();
         renderHelpPage();
-        
     } catch (err) {
-        helpContent.innerHTML = `<p style="color: red;">Ошибка загрузки справки: ${err.message}</p>
-        <p>Убедитесь, что файл README.md находится в той же папке, что и index.html.</p>`;
+        helpContent.innerHTML = `<p style="color: red;">Ошибка загрузки справки: ${err.message}</p>`;
     }
 }
 
@@ -1015,24 +901,21 @@ document.getElementById('helpModal').addEventListener('click', (e) => {
 
 // Горячие клавиши
 document.addEventListener('keydown', (e) => {
-    if (e.ctrlKey && e.key === 'o') { 
-        e.preventDefault(); 
-        document.getElementById('btnOpen').click(); 
-    }
-    else if (e.ctrlKey && e.key === 'r') { 
-        e.preventDefault(); 
-        if (!document.getElementById('btnCalculate').disabled) calculate(); 
-    }
-    else if (e.ctrlKey && e.shiftKey && e.key === 'S') { 
-        e.preventDefault(); 
-        if (!document.getElementById('btnSaveAs').disabled) saveAsFile(); 
-    }
-    else if (e.key === 'F1') { 
-        e.preventDefault(); 
-        loadHelp(); 
+    if (e.ctrlKey && e.key === 'o') {
+        e.preventDefault();
+        document.getElementById('btnOpen').click();
+    } else if (e.ctrlKey && e.key === 'r') {
+        e.preventDefault();
+        if (!document.getElementById('btnCalculate').disabled) calculate();
+    } else if (e.ctrlKey && e.shiftKey && e.key === 'S') {
+        e.preventDefault();
+        if (!document.getElementById('btnSaveAs').disabled) saveAsFile();
+    } else if (e.key === 'F1') {
+        e.preventDefault();
+        loadHelp();
     }
 });
 
 // Инициализация
 updateUI();
-console.log(`KIMPL1 версия ${APP_VERSION} загружена`);
+console.log(`Версия ${APP_VERSION} загружена`);
