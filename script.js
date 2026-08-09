@@ -1,10 +1,10 @@
 // script.js
 /**
  * Вычисление замыкания системы функциональных зависимостей
- * Версия 12.1 - исправлен алгоритм вывода
+ * Версия 12.2 - каноническая форма в среднем и правом окнах
  */
 
-const APP_VERSION = "12.1";
+const APP_VERSION = "12.2";
 
 // ============================================================
 // Хранилище данных
@@ -77,7 +77,6 @@ function containsFd(list, cube) {
 }
 
 function isSubset(a, b) {
-    // Проверяет, является ли массив a подмножеством b
     for (const item of a) {
         if (!b.includes(item)) return false;
     }
@@ -85,7 +84,6 @@ function isSubset(a, b) {
 }
 
 function applyTransitivity(fd1, fd2, n) {
-    // fd1: X→Y, fd2: Y→Z, результат: X→Z
     const det1 = getDeterminants(fd1, n);
     const func1 = getFunctions(fd1, n);
     const det2 = getDeterminants(fd2, n);
@@ -93,7 +91,6 @@ function applyTransitivity(fd1, fd2, n) {
     
     if (func1.length === 0 || det2.length === 0) return null;
     
-    // Проверяем, что все атрибуты из func1 есть в det2
     for (const attr of func1) {
         if (!det2.includes(attr)) return null;
     }
@@ -105,7 +102,6 @@ function applyTransitivity(fd1, fd2, n) {
 }
 
 function applyPseudoTransitivity(fd1, fd2, n) {
-    // fd1: X→Y, fd2: Y*Z→W, результат: X*Z→W
     const det1 = getDeterminants(fd1, n);
     const func1 = getFunctions(fd1, n);
     const det2 = getDeterminants(fd2, n);
@@ -113,12 +109,10 @@ function applyPseudoTransitivity(fd1, fd2, n) {
     
     if (func1.length === 0 || det2.length === 0) return null;
     
-    // Проверяем, что все атрибуты из func1 есть в det2
     for (const attr of func1) {
         if (!det2.includes(attr)) return null;
     }
     
-    // Проверяем, есть ли в det2 атрибуты, которых нет в func1
     let hasNewDet = false;
     for (const attr of det2) {
         if (!func1.includes(attr)) {
@@ -127,10 +121,8 @@ function applyPseudoTransitivity(fd1, fd2, n) {
         }
     }
     
-    // Если нет новых детерминантов, это просто транзитивность
     if (!hasNewDet) return null;
     
-    // Формируем новые детерминанты: X + (Z \ Y)
     const newDet = [...det1];
     for (const attr of det2) {
         if (!func1.includes(attr) && !newDet.includes(attr)) {
@@ -138,7 +130,6 @@ function applyPseudoTransitivity(fd1, fd2, n) {
         }
     }
     
-    // Проверяем, что новые детерминанты не совпадают с func2 (тривиальность)
     let allInDet = true;
     for (const attr of func2) {
         if (!newDet.includes(attr)) {
@@ -168,10 +159,7 @@ function removeRedundant(fds, n) {
             const det_j = getDeterminants(fds[j], n);
             const func_j = getFunctions(fds[j], n);
             
-            // Если det_j ⊆ det_i и func_i ⊆ func_j, то fds[i] избыточна
-            // (более общий детерминант и более широкая правая часть)
             if (isSubset(det_j, det_i) && isSubset(func_i, func_j)) {
-                // Проверяем, что это не та же самая ФЗ
                 if (det_i.length > det_j.length || func_i.length < func_j.length) {
                     redundant = true;
                     break;
@@ -206,14 +194,12 @@ function computeClosure(fds, n) {
                 const fd1 = closure[i];
                 const fd2 = closure[j];
                 
-                // Транзитивность: X→Y и Y→Z => X→Z
                 const result1 = applyTransitivity(fd1, fd2, n);
                 if (result1 !== null && !containsFd(closure, result1) && !containsFd(newFds, result1)) {
                     newFds.push(result1);
                     changed = true;
                 }
                 
-                // Псевдотранзитивность: X→Y и Y*Z→W => X*Z→W
                 const result2 = applyPseudoTransitivity(fd1, fd2, n);
                 if (result2 !== null && !containsFd(closure, result2) && !containsFd(newFds, result2)) {
                     newFds.push(result2);
@@ -224,16 +210,13 @@ function computeClosure(fds, n) {
         
         if (changed) {
             closure = closure.concat(newFds);
-            // Периодически удаляем избыточные ФЗ
             if (closure.length > 100) {
                 closure = removeRedundant(closure, n);
             }
         }
     }
     
-    // Финальное удаление избыточных ФЗ
     closure = removeRedundant(closure, n);
-    
     return closure;
 }
 
@@ -398,14 +381,15 @@ function renderCenterPanel() {
         return;
     }
     
-    const grouped = groupByDeterminants(appState.originalFds.map(fd => fd.tm));
+    // Показываем в канонической форме
+    const canonicalList = appState.canonicalFds.map(fd => fd.tm);
     
     let html = '<table class="fds-table">';
     html += '<tbody>';
-    for (let i = 0; i < grouped.length; i++) {
+    for (let i = 0; i < canonicalList.length; i++) {
         html += `<tr>
             <td class="fd-number">${i + 1}</td>
-            <td class="fd-tm">${escapeHtml(grouped[i])}</td>
+            <td class="fd-tm">${escapeHtml(canonicalList[i])}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -420,14 +404,13 @@ function renderClosureTable() {
         return;
     }
     
-    const grouped = groupByDeterminants(appState.closureCform);
-    
+    // Показываем в канонической форме
     let html = '<table class="fds-table">';
     html += '<tbody>';
-    for (let i = 0; i < grouped.length; i++) {
+    for (let i = 0; i < appState.closureCform.length; i++) {
         html += `<tr>
             <td class="fd-number">${i + 1}</td>
-            <td class="fd-tm">${escapeHtml(grouped[i])}</td>
+            <td class="fd-tm">${escapeHtml(appState.closureCform[i])}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -795,8 +778,7 @@ function copyClosureToClipboard() {
         return;
     }
     
-    const grouped = groupByDeterminants(appState.closureCform);
-    const text = grouped.join('\n');
+    const text = appState.closureCform.join('\n');
     
     navigator.clipboard.writeText(text).then(() => {
         document.getElementById('statusBar').textContent = "Результат скопирован в буфер обмена.";
