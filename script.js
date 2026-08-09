@@ -1,18 +1,18 @@
 // script.js
 /**
  * Вычисление замыкания системы функциональных зависимостей
- * Версия 12.0 - алгоритм на основе правил вывода
+ * Версия 12.1 - исправлен алгоритм вывода
  */
 
-const APP_VERSION = "12.0";
+const APP_VERSION = "12.1";
 
 // ============================================================
 // Хранилище данных
 // ============================================================
 let appState = {
     currentFile: null,
-    originalFds: [],           // исходные ФЗ (составная форма, как ввёл пользователь)
-    canonicalFds: [],          // каноническая форма (для расчёта)
+    originalFds: [],
+    canonicalFds: [],
     attrMap: null,
     attrMapReverse: null,
     numericFds: [],
@@ -24,7 +24,7 @@ let appState = {
 };
 
 // ============================================================
-// АЛГОРИТМ ВЫЧИСЛЕНИЯ ЗАМЫКАНИЯ (на основе правил вывода)
+// АЛГОРИТМ ВЫЧИСЛЕНИЯ ЗАМЫКАНИЯ
 // ============================================================
 
 function getDeterminants(cube, n) {
@@ -49,7 +49,7 @@ function createCube(determinants, functions, n) {
     let cube = 0;
     for (let i = 0; i < n; i++) {
         const attrNum = i + 1;
-        let digit = 3; // по умолчанию не используется
+        let digit = 3;
         if (determinants.includes(attrNum)) {
             digit = 1;
         } else if (functions.includes(attrNum)) {
@@ -76,6 +76,14 @@ function containsFd(list, cube) {
     return false;
 }
 
+function isSubset(a, b) {
+    // Проверяет, является ли массив a подмножеством b
+    for (const item of a) {
+        if (!b.includes(item)) return false;
+    }
+    return true;
+}
+
 function applyTransitivity(fd1, fd2, n) {
     // fd1: X→Y, fd2: Y→Z, результат: X→Z
     const det1 = getDeterminants(fd1, n);
@@ -90,7 +98,6 @@ function applyTransitivity(fd1, fd2, n) {
         if (!det2.includes(attr)) return null;
     }
     
-    // Проверяем, что результат не тривиальный
     const newCube = createCube(det1, func2, n);
     if (isTrivial(newCube, n)) return null;
     
@@ -111,6 +118,18 @@ function applyPseudoTransitivity(fd1, fd2, n) {
         if (!det2.includes(attr)) return null;
     }
     
+    // Проверяем, есть ли в det2 атрибуты, которых нет в func1
+    let hasNewDet = false;
+    for (const attr of det2) {
+        if (!func1.includes(attr)) {
+            hasNewDet = true;
+            break;
+        }
+    }
+    
+    // Если нет новых детерминантов, это просто транзитивность
+    if (!hasNewDet) return null;
+    
     // Формируем новые детерминанты: X + (Z \ Y)
     const newDet = [...det1];
     for (const attr of det2) {
@@ -119,12 +138,7 @@ function applyPseudoTransitivity(fd1, fd2, n) {
         }
     }
     
-    // Проверяем, что результат не тривиальный
-    const newCube = createCube(newDet, func2, n);
-    if (isTrivial(newCube, n)) return null;
-    
-    // Проверяем, что новые детерминанты не совпадают с func2
-    // (иначе это тривиальная зависимость)
+    // Проверяем, что новые детерминанты не совпадают с func2 (тривиальность)
     let allInDet = true;
     for (const attr of func2) {
         if (!newDet.includes(attr)) {
@@ -134,18 +148,52 @@ function applyPseudoTransitivity(fd1, fd2, n) {
     }
     if (allInDet) return null;
     
+    const newCube = createCube(newDet, func2, n);
+    if (isTrivial(newCube, n)) return null;
+    
     return newCube;
+}
+
+function removeRedundant(fds, n) {
+    if (fds.length <= 1) return fds;
+    
+    const result = [];
+    for (let i = 0; i < fds.length; i++) {
+        let redundant = false;
+        const det_i = getDeterminants(fds[i], n);
+        const func_i = getFunctions(fds[i], n);
+        
+        for (let j = 0; j < fds.length; j++) {
+            if (i === j) continue;
+            const det_j = getDeterminants(fds[j], n);
+            const func_j = getFunctions(fds[j], n);
+            
+            // Если det_j ⊆ det_i и func_i ⊆ func_j, то fds[i] избыточна
+            // (более общий детерминант и более широкая правая часть)
+            if (isSubset(det_j, det_i) && isSubset(func_i, func_j)) {
+                // Проверяем, что это не та же самая ФЗ
+                if (det_i.length > det_j.length || func_i.length < func_j.length) {
+                    redundant = true;
+                    break;
+                }
+            }
+        }
+        if (!redundant) {
+            result.push(fds[i]);
+        }
+    }
+    return result;
 }
 
 function computeClosure(fds, n) {
     if (!n || fds.length === 0) return [];
     
-    // Копируем все исходные ФЗ
     let closure = [...fds];
     let changed = true;
     let iteration = 0;
+    const maxIterations = 50;
     
-    while (changed && iteration < 100) {
+    while (changed && iteration < maxIterations) {
         changed = false;
         iteration++;
         const newFds = [];
@@ -176,8 +224,15 @@ function computeClosure(fds, n) {
         
         if (changed) {
             closure = closure.concat(newFds);
+            // Периодически удаляем избыточные ФЗ
+            if (closure.length > 100) {
+                closure = removeRedundant(closure, n);
+            }
         }
     }
+    
+    // Финальное удаление избыточных ФЗ
+    closure = removeRedundant(closure, n);
     
     return closure;
 }
@@ -343,7 +398,6 @@ function renderCenterPanel() {
         return;
     }
     
-    // Группируем по детерминантам для отображения в составной форме
     const grouped = groupByDeterminants(appState.originalFds.map(fd => fd.tm));
     
     let html = '<table class="fds-table">';
@@ -366,7 +420,6 @@ function renderClosureTable() {
         return;
     }
     
-    // Группируем по детерминантам для отображения в составной форме
     const grouped = groupByDeterminants(appState.closureCform);
     
     let html = '<table class="fds-table">';
@@ -543,10 +596,8 @@ function calculate() {
     
     setTimeout(() => {
         try {
-            // Вычисляем замыкание
             const closureCubes = computeClosure(kubList, n);
             
-            // Преобразуем обратно в строки
             const closureNumeric = [];
             for (const cube of closureCubes) {
                 const tmStr = cubeToTm(cube, n);
@@ -735,6 +786,32 @@ async function saveAsFile() {
 }
 
 // ============================================================
+// КОПИРОВАНИЕ РЕЗУЛЬТАТА
+// ============================================================
+
+function copyClosureToClipboard() {
+    if (!appState.closureCform || appState.closureCform.length === 0) {
+        alert("Нет результата для копирования.");
+        return;
+    }
+    
+    const grouped = groupByDeterminants(appState.closureCform);
+    const text = grouped.join('\n');
+    
+    navigator.clipboard.writeText(text).then(() => {
+        document.getElementById('statusBar').textContent = "Результат скопирован в буфер обмена.";
+    }).catch(() => {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        document.getElementById('statusBar').textContent = "Результат скопирован в буфер обмена.";
+    });
+}
+
+// ============================================================
 // СПРАВКА
 // ============================================================
 
@@ -875,6 +952,15 @@ function updateUI() {
 // ============================================================
 // НАСТРОЙКА СОБЫТИЙ
 // ============================================================
+
+// Добавляем кнопку "Копировать результат"
+const toolbar = document.querySelector('.toolbar');
+const btnCopy = document.createElement('button');
+btnCopy.id = 'btnCopy';
+btnCopy.title = 'Копировать результат';
+btnCopy.innerHTML = '📋 Копировать';
+btnCopy.addEventListener('click', copyClosureToClipboard);
+toolbar.appendChild(btnCopy);
 
 const fileInput = document.getElementById('fileInput');
 fileInput.onchange = (e) => {
