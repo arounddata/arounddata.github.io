@@ -1,10 +1,10 @@
 // script.js
 /**
  * Вычисление замыкания системы функциональных зависимостей
- * Версия 12.2 - каноническая форма в среднем и правом окнах
+ * Версия 12.3 - исправлена псевдотранзитивность
  */
 
-const APP_VERSION = "12.2";
+const APP_VERSION = "12.3";
 
 // ============================================================
 // Хранилище данных
@@ -84,6 +84,7 @@ function isSubset(a, b) {
 }
 
 function applyTransitivity(fd1, fd2, n) {
+    // fd1: X→Y, fd2: Y→Z, результат: X→Z
     const det1 = getDeterminants(fd1, n);
     const func1 = getFunctions(fd1, n);
     const det2 = getDeterminants(fd2, n);
@@ -91,6 +92,7 @@ function applyTransitivity(fd1, fd2, n) {
     
     if (func1.length === 0 || det2.length === 0) return null;
     
+    // Проверяем, что все атрибуты из func1 есть в det2
     for (const attr of func1) {
         if (!det2.includes(attr)) return null;
     }
@@ -102,6 +104,7 @@ function applyTransitivity(fd1, fd2, n) {
 }
 
 function applyPseudoTransitivity(fd1, fd2, n) {
+    // fd1: X→Y, fd2: Y*Z→W, результат: X*Z→W
     const det1 = getDeterminants(fd1, n);
     const func1 = getFunctions(fd1, n);
     const det2 = getDeterminants(fd2, n);
@@ -109,10 +112,12 @@ function applyPseudoTransitivity(fd1, fd2, n) {
     
     if (func1.length === 0 || det2.length === 0) return null;
     
+    // Проверяем, что все атрибуты из func1 есть в det2
     for (const attr of func1) {
         if (!det2.includes(attr)) return null;
     }
     
+    // Проверяем, есть ли в det2 атрибуты, которых нет в func1
     let hasNewDet = false;
     for (const attr of det2) {
         if (!func1.includes(attr)) {
@@ -121,8 +126,11 @@ function applyPseudoTransitivity(fd1, fd2, n) {
         }
     }
     
+    // Если нет новых детерминантов, это просто транзитивность
     if (!hasNewDet) return null;
     
+    // Формируем новые детерминанты: X + (Z \ Y)
+    // где Z = det2, Y = func1
     const newDet = [...det1];
     for (const attr of det2) {
         if (!func1.includes(attr) && !newDet.includes(attr)) {
@@ -130,6 +138,10 @@ function applyPseudoTransitivity(fd1, fd2, n) {
         }
     }
     
+    // Проверяем, что новые детерминанты не пустые
+    if (newDet.length === 0) return null;
+    
+    // Проверяем, что результат не тривиальный
     let allInDet = true;
     for (const attr of func2) {
         if (!newDet.includes(attr)) {
@@ -140,6 +152,27 @@ function applyPseudoTransitivity(fd1, fd2, n) {
     if (allInDet) return null;
     
     const newCube = createCube(newDet, func2, n);
+    if (isTrivial(newCube, n)) return null;
+    
+    return newCube;
+}
+
+function applyPseudoTransitivityReverse(fd1, fd2, n) {
+    // fd1: X*Y→Z, fd2: Z→W, результат: X*Y→W
+    // Это частный случай псевдотранзитивности: если X*Y→Z и Z→W, то X*Y→W
+    const det1 = getDeterminants(fd1, n);
+    const func1 = getFunctions(fd1, n);
+    const det2 = getDeterminants(fd2, n);
+    const func2 = getFunctions(fd2, n);
+    
+    if (func1.length === 0 || det2.length === 0) return null;
+    
+    // Проверяем, что все атрибуты из func1 есть в det2
+    for (const attr of func1) {
+        if (!det2.includes(attr)) return null;
+    }
+    
+    const newCube = createCube(det1, func2, n);
     if (isTrivial(newCube, n)) return null;
     
     return newCube;
@@ -159,6 +192,7 @@ function removeRedundant(fds, n) {
             const det_j = getDeterminants(fds[j], n);
             const func_j = getFunctions(fds[j], n);
             
+            // Если det_j ⊆ det_i и func_i ⊆ func_j, то fds[i] избыточна
             if (isSubset(det_j, det_i) && isSubset(func_i, func_j)) {
                 if (det_i.length > det_j.length || func_i.length < func_j.length) {
                     redundant = true;
@@ -194,15 +228,24 @@ function computeClosure(fds, n) {
                 const fd1 = closure[i];
                 const fd2 = closure[j];
                 
+                // 1. Транзитивность: X→Y и Y→Z => X→Z
                 const result1 = applyTransitivity(fd1, fd2, n);
                 if (result1 !== null && !containsFd(closure, result1) && !containsFd(newFds, result1)) {
                     newFds.push(result1);
                     changed = true;
                 }
                 
+                // 2. Псевдотранзитивность: X→Y и Y*Z→W => X*Z→W
                 const result2 = applyPseudoTransitivity(fd1, fd2, n);
                 if (result2 !== null && !containsFd(closure, result2) && !containsFd(newFds, result2)) {
                     newFds.push(result2);
+                    changed = true;
+                }
+                
+                // 3. Обратная псевдотранзитивность: X*Y→Z и Z→W => X*Y→W
+                const result3 = applyPseudoTransitivityReverse(fd1, fd2, n);
+                if (result3 !== null && !containsFd(closure, result3) && !containsFd(newFds, result3)) {
+                    newFds.push(result3);
                     changed = true;
                 }
             }
