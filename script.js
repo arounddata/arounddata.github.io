@@ -1,10 +1,10 @@
 // script.js
 /**
  * Вычисление замыкания системы функциональных зависимостей
- * Версия 12.6 - ПОЛНОСТЬЮ ПЕРЕПИСАНА ПСЕВДОТРАНЗИТИВНОСТЬ
+ * Версия 15.6 - исходные ФЗ голубым, выведенные чёрным, сортировка по номерам
  */
 
-const APP_VERSION = "12.6";
+const APP_VERSION = "15.6";
 
 // ============================================================
 // Хранилище данных
@@ -24,220 +24,239 @@ let appState = {
 };
 
 // ============================================================
-// АЛГОРИТМ ВЫЧИСЛЕНИЯ ЗАМЫКАНИЯ
+// ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ДЛЯ УПРАВЛЕНИЯ РАСЧЁТОМ
+// ============================================================
+let cancelRequested = false;
+let progressCallback = null;
+let timeoutCallback = null;
+
+// ============================================================
+// РАБОТА С КУБАМИ
 // ============================================================
 
-function getDeterminants(cube, n) {
-    const det = [];
-    for (let i = 0; i < n; i++) {
-        const digit = (cube >> (i * 2)) & 3;
-        if (digit === 1) det.push(i + 1);
-    }
-    return det;
-}
-
-function getFunctions(cube, n) {
-    const func = [];
-    for (let i = 0; i < n; i++) {
-        const digit = (cube >> (i * 2)) & 3;
-        if (digit === 2) func.push(i + 1);
-    }
-    return func;
-}
-
-function createCube(determinants, functions, n) {
+function encodeCube(det, func, n) {
     let cube = 0;
     for (let i = 0; i < n; i++) {
         const attrNum = i + 1;
-        let digit = 3;
-        if (determinants.includes(attrNum)) {
-            digit = 1;
-        } else if (functions.includes(attrNum)) {
-            digit = 2;
+        let digit;
+        if (det.includes(attrNum)) {
+            digit = 1;  // детерминант
+        } else if (func.includes(attrNum)) {
+            digit = 0;  // функция
+        } else {
+            digit = 2;  // X - не участвует
         }
         cube |= (digit << (i * 2));
     }
     return cube;
 }
 
-function cubeToString(cube, n) {
-    const det = getDeterminants(cube, n);
-    const func = getFunctions(cube, n);
-    if (func.length === 0) return "";
+function decodeCube(cube, n) {
+    const det = [];
+    const func = [];
+    for (let i = 0; i < n; i++) {
+        const digit = (cube >> (i * 2)) & 3;
+        const attrNum = i + 1;
+        if (digit === 1) det.push(attrNum);
+        else if (digit === 0) func.push(attrNum);
+    }
+    return { det, func };
+}
+
+function cubeToStr(cube, n) {
+    const { det, func } = decodeCube(cube, n);
+    if (func.length === 0 || det.length === 0) return "";
     return det.join('*') + '-' + func.join('-');
 }
 
-function isTrivial(cube, n) {
-    const det = getDeterminants(cube, n);
-    const func = getFunctions(cube, n);
-    for (const attr of func) {
-        if (!det.includes(attr)) return false;
-    }
-    return true;
+function cubeToString(cube, n, attrMapReverse) {
+    const { det, func } = decodeCube(cube, n);
+    if (func.length === 0 || det.length === 0) return "";
+    const detStr = det.map(a => attrMapReverse.get(a)).join('*');
+    const funcStr = func.map(a => attrMapReverse.get(a)).join('-');
+    return detStr + '-' + funcStr;
 }
 
-function containsFd(list, cube) {
-    for (const fd of list) {
-        if (fd === cube) return true;
-    }
-    return false;
-}
-
-function isSubset(a, b) {
-    for (const item of a) {
-        if (!b.includes(item)) return false;
-    }
-    return true;
-}
-
-function applyTransitivity(fd1, fd2, n) {
-    const det1 = getDeterminants(fd1, n);
-    const func1 = getFunctions(fd1, n);
-    const det2 = getDeterminants(fd2, n);
-    const func2 = getFunctions(fd2, n);
+function starProduct(cube1, cube2, n) {
+    let result = 0;
+    let yCount = 0;
+    let yPos = -1;
     
-    if (func1.length === 0 || det2.length === 0) return null;
-    
-    for (const attr of func1) {
-        if (!det2.includes(attr)) return null;
-    }
-    
-    const newCube = createCube(det1, func2, n);
-    if (isTrivial(newCube, n)) return null;
-    
-    return newCube;
-}
-
-function applyPseudoTransitivity(fd1, fd2, n) {
-    // fd1: X→Y (где Y - один атрибут)
-    // fd2: Y*Z→W
-    // Результат: X*Z→W
-    
-    const det1 = getDeterminants(fd1, n);
-    const func1 = getFunctions(fd1, n);
-    const det2 = getDeterminants(fd2, n);
-    const func2 = getFunctions(fd2, n);
-    
-    // fd1 должна иметь ровно одну функцию (X→Y)
-    if (func1.length !== 1) return null;
-    
-    // fd2 должна иметь хотя бы один детерминант
-    if (det2.length === 0) return null;
-    
-    const y = func1[0]; // единственный атрибут в правой части fd1
-    
-    // Проверяем, что Y входит в левую часть fd2
-    if (!det2.includes(y)) return null;
-    
-    // Находим Z = det2 \ {Y} (атрибуты из левой части fd2, кроме Y)
-    const z = det2.filter(attr => attr !== y);
-    
-    // Если Z пусто, то это обычная транзитивность (уже обработана)
-    if (z.length === 0) return null;
-    
-    // Формируем новые детерминанты: X + Z
-    const newDet = [...det1];
-    for (const attr of z) {
-        if (!newDet.includes(attr)) {
-            newDet.push(attr);
-        }
-    }
-    newDet.sort((a, b) => a - b);
-    
-    // Проверяем, что результат не тривиальный
-    let allInDet = true;
-    for (const attr of func2) {
-        if (!newDet.includes(attr)) {
-            allInDet = false;
-            break;
-        }
-    }
-    if (allInDet) return null;
-    
-    const newCube = createCube(newDet, func2, n);
-    if (isTrivial(newCube, n)) return null;
-    
-    return newCube;
-}
-
-function removeRedundant(fds, n) {
-    if (fds.length <= 1) return fds;
-    
-    const result = [];
-    for (let i = 0; i < fds.length; i++) {
-        let redundant = false;
-        const det_i = getDeterminants(fds[i], n);
-        const func_i = getFunctions(fds[i], n);
+    for (let i = 0; i < n; i++) {
+        const a = (cube1 >> (i * 2)) & 3;
+        const b = (cube2 >> (i * 2)) & 3;
+        let c;
         
-        for (let j = 0; j < fds.length; j++) {
-            if (i === j) continue;
-            const det_j = getDeterminants(fds[j], n);
-            const func_j = getFunctions(fds[j], n);
-            
-            if (isSubset(det_j, det_i) && isSubset(func_i, func_j)) {
-                if (det_i.length > det_j.length || func_i.length < func_j.length) {
-                    redundant = true;
-                    break;
-                }
-            }
+        // Таблица покоординатного *-произведения
+        // *  | 0  1  x
+        // ---+---------
+        // 0  | 0  y  0
+        // 1  | y  1  1
+        // x  | 0  1  x
+        
+        if (a === 0 && b === 0) {
+            c = 0;
+        } else if (a === 0 && b === 1) {
+            c = 3;
+            yCount++;
+            yPos = i;
+        } else if (a === 0 && b === 2) {
+            c = 0;
+        } else if (a === 1 && b === 0) {
+            c = 3;
+            yCount++;
+            yPos = i;
+        } else if (a === 1 && b === 1) {
+            c = 1;
+        } else if (a === 1 && b === 2) {
+            c = 1;
+        } else if (a === 2 && b === 0) {
+            c = 0;
+        } else if (a === 2 && b === 1) {
+            c = 1;
+        } else if (a === 2 && b === 2) {
+            c = 2;
         }
-        if (!redundant) {
-            result.push(fds[i]);
+        
+        if (yCount > 1) {
+            return null;
         }
+        
+        let digit;
+        if (c === 3) {
+            digit = 2;
+        } else {
+            digit = c;
+        }
+        result |= (digit << (i * 2));
     }
+    
+    let hasDet = false;
+    for (let i = 0; i < n; i++) {
+        const d = (result >> (i * 2)) & 3;
+        if (d === 1) { hasDet = true; break; }
+    }
+    if (!hasDet) return null;
+    
+    let hasFunc = false;
+    for (let i = 0; i < n; i++) {
+        const d = (result >> (i * 2)) & 3;
+        if (d === 0) { hasFunc = true; break; }
+    }
+    if (!hasFunc) return null;
+    
     return result;
 }
 
-function computeClosure(fds, n) {
+// ============================================================
+// ОСНОВНОЙ АЛГОРИТМ ВЫЧИСЛЕНИЯ ЗАМЫКАНИЯ
+// ============================================================
+
+function computeClosure(fds, n, onProgress, onTimeout) {
     if (!n || fds.length === 0) return [];
     
     let closure = [...fds];
+    let kkz = closure.length;
+    
+    if (kkz === 1) {
+        return closure;
+    }
+    
     let changed = true;
     let iteration = 0;
-    const maxIterations = 50;
+    const TIMEOUT_MS = 10000;  // 10 секунд
+    let lastProgressUpdate = Date.now();
+    let startTime = Date.now();
+    let timeoutShown = false;
     
-    while (changed && iteration < maxIterations) {
+    while (changed) {
         changed = false;
         iteration++;
-        const newFds = [];
-        const currentLength = closure.length;
         
-        for (let i = 0; i < currentLength; i++) {
-            for (let j = 0; j < currentLength; j++) {
-                if (i === j) continue;
-                
-                const fd1 = closure[i];
-                const fd2 = closure[j];
-                
-                // 1. Транзитивность: X→Y и Y→Z => X→Z
-                const result1 = applyTransitivity(fd1, fd2, n);
-                if (result1 !== null && !containsFd(closure, result1) && !containsFd(newFds, result1)) {
-                    newFds.push(result1);
-                    changed = true;
-                }
-                
-                // 2. Псевдотранзитивность: X→Y и Y*Z→W => X*Z→W
-                // Применяем только если fd1 имеет ровно одну функцию
-                const func1 = getFunctions(fd1, n);
-                if (func1.length === 1) {
-                    const result2 = applyPseudoTransitivity(fd1, fd2, n);
-                    if (result2 !== null && !containsFd(closure, result2) && !containsFd(newFds, result2)) {
-                        newFds.push(result2);
-                        changed = true;
-                    }
-                }
+        if (onProgress) {
+            const now = Date.now();
+            if (now - lastProgressUpdate > 200) {
+                onProgress(iteration, kkz, closure.length);
+                lastProgressUpdate = now;
             }
         }
         
-        if (changed) {
-            closure = closure.concat(newFds);
-            if (closure.length > 100) {
-                closure = removeRedundant(closure, n);
+        if (!timeoutShown && Date.now() - startTime > TIMEOUT_MS) {
+            timeoutShown = true;
+            if (onTimeout) {
+                const shouldContinue = onTimeout(iteration, kkz);
+                if (!shouldContinue) {
+                    throw new Error('Расчёт прерван пользователем (таймаут)');
+                }
+                startTime = Date.now();
+                timeoutShown = false;
+            }
+        }
+        
+        if (cancelRequested) {
+            throw new Error('Расчёт отменён пользователем');
+        }
+        
+        for (let i = 0; i < kkz - 1; i++) {
+            for (let j = i + 1; j < kkz; j++) {
+                const result = starProduct(closure[i], closure[j], n);
+                
+                if (result !== null) {
+                    const kk = result;
+                    
+                    if (kk === closure[i]) {
+                        closure.splice(i, 1);
+                        kkz--;
+                        changed = true;
+                        break;
+                    } else if (kk === closure[j]) {
+                        closure.splice(j, 1);
+                        kkz--;
+                        changed = true;
+                        break;
+                    }
+                    
+                    let isAbsorbed = false;
+                    for (let k = 0; k < kkz; k++) {
+                        const spResult = starProduct(kk, closure[k], n);
+                        if (spResult !== null && spResult === kk) {
+                            isAbsorbed = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isAbsorbed) {
+                        closure.push(kk);
+                        kkz++;
+                        changed = true;
+                        
+                        const newIdx = kkz - 1;
+                        const toRemove = [];
+                        
+                        for (let k = 0; k < newIdx; k++) {
+                            const spResult = starProduct(kk, closure[k], n);
+                            if (spResult !== null && spResult === closure[k]) {
+                                toRemove.push(k);
+                            }
+                        }
+                        
+                        toRemove.sort((a, b) => b - a);
+                        for (const idx of toRemove) {
+                            closure.splice(idx, 1);
+                            kkz--;
+                        }
+                        
+                        break;
+                    }
+                }
+            }
+            
+            if (changed) {
+                break;
             }
         }
     }
     
-    closure = removeRedundant(closure, n);
     return closure;
 }
 
@@ -275,7 +294,12 @@ function getUniqueAttributes(fdsList) {
         determinants.forEach(d => attrs.add(d));
         functions.forEach(f => attrs.add(f));
     }
-    return Array.from(attrs).sort();
+    return Array.from(attrs).sort((a, b) => {
+        // Сортировка по номерам: 1,2,3,...,9,10,11,...
+        const numA = parseInt(a);
+        const numB = parseInt(b);
+        return numA - numB;
+    });
 }
 
 function cformToNumeric(tmStr, attrMap) {
@@ -321,22 +345,38 @@ function escapeHtml(str) {
     });
 }
 
-function groupByDeterminants(fdsList) {
-    const groups = {};
-    for (const fd of fdsList) {
-        const parts = fd.split('-');
-        const det = parts[0];
-        const func = parts[1];
-        if (!groups[det]) groups[det] = [];
-        groups[det].push(func);
-    }
-    
-    const result = [];
-    for (const det in groups) {
-        const funcs = groups[det].sort();
-        result.push(det + '-' + funcs.join('-'));
-    }
-    return result.sort();
+// Функция сортировки ФЗ по номерам атрибутов
+function sortFdsByNumbers(fdsList) {
+    return fdsList.sort((a, b) => {
+        // Разбиваем на левую и правую части
+        const partsA = a.split('-');
+        const partsB = b.split('-');
+        const detA = partsA[0];
+        const detB = partsB[0];
+        const funcA = partsA.slice(1).join('-');
+        const funcB = partsB.slice(1).join('-');
+        
+        // Функция для сравнения строк с числами
+        function compareNumericStrings(strA, strB) {
+            const tokensA = strA.split(/[*\-]/);
+            const tokensB = strB.split(/[*\-]/);
+            const minLen = Math.min(tokensA.length, tokensB.length);
+            
+            for (let i = 0; i < minLen; i++) {
+                const numA = parseInt(tokensA[i]);
+                const numB = parseInt(tokensB[i]);
+                if (numA !== numB) return numA - numB;
+            }
+            return tokensA.length - tokensB.length;
+        }
+        
+        // Сначала сравниваем левые части
+        const detCompare = compareNumericStrings(detA, detB);
+        if (detCompare !== 0) return detCompare;
+        
+        // Затем правые части
+        return compareNumericStrings(funcA, funcB);
+    });
 }
 
 function renderEditableTable() {
@@ -409,7 +449,7 @@ function renderCenterPanel() {
     for (let i = 0; i < canonicalList.length; i++) {
         html += `<tr>
             <td class="fd-number">${i + 1}</td>
-            <td class="fd-tm">${escapeHtml(canonicalList[i])}</td>
+            <td class="fd-tm" style="color: #0d6efd;">${escapeHtml(canonicalList[i])}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -424,12 +464,22 @@ function renderClosureTable() {
         return;
     }
     
+    // Исходные ФЗ (в канонической форме) для определения, какие являются исходными
+    const originalCanonical = appState.canonicalFds.map(fd => fd.tm);
+    const originalSet = new Set(originalCanonical);
+    
+    // Копируем и сортируем все ФЗ из замыкания
+    const sortedFds = sortFdsByNumbers([...appState.closureCform]);
+    
     let html = '<table class="fds-table">';
     html += '<tbody>';
-    for (let i = 0; i < appState.closureCform.length; i++) {
+    for (let i = 0; i < sortedFds.length; i++) {
+        const fd = sortedFds[i];
+        // Если ФЗ есть в исходных — голубым, иначе — чёрным
+        const color = originalSet.has(fd) ? '#0d6efd' : '#000000';
         html += `<tr>
             <td class="fd-number">${i + 1}</td>
-            <td class="fd-tm">${escapeHtml(appState.closureCform[i])}</td>
+            <td class="fd-tm" style="color: ${color};">${escapeHtml(fd)}</td>
         </tr>`;
     }
     html += '</tbody></table>';
@@ -505,27 +555,6 @@ function clearAllPanels() {
     document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
 }
 
-function validateCForm(tmStr) {
-    if (!tmStr || tmStr.trim() === '') return false;
-    
-    const invalidChars = tmStr.match(/[^a-zA-Z0-9_*\-]/);
-    if (invalidChars) {
-        alert(`Недопустимый символ: "${invalidChars[0]}" в строке "${tmStr}"`);
-        return false;
-    }
-    
-    const parts = tmStr.split('-');
-    if (!parts[0] || parts[0].trim() === '') {
-        alert(`Пустая левая часть в "${tmStr}"`);
-        return false;
-    }
-    if (parts.length < 2 || !parts[1] || parts[1].trim() === '') {
-        alert(`Пустая правая часть в "${tmStr}"`);
-        return false;
-    }
-    return true;
-}
-
 function checkData() {
     if (appState.originalFds.length === 0) {
         alert("Нет данных для проверки. Добавьте ФЗ или откройте файл.");
@@ -536,10 +565,6 @@ function checkData() {
     if (hasEmpty) {
         alert("Есть пустые строки. Заполните или удалите их.");
         return;
-    }
-    
-    for (const fd of appState.originalFds) {
-        if (!validateCForm(fd.tm)) return;
     }
     
     const canonicalFds = expandToCanonical(appState.originalFds);
@@ -573,6 +598,10 @@ function checkData() {
     document.getElementById('rightPanel').innerHTML = '<div class="placeholder">Нет результатов</div>';
 }
 
+// ============================================================
+// ОБРАБОТЧИК КНОПКИ "РАССЧИТАТЬ"
+// ============================================================
+
 function calculate() {
     if (!appState.isDataValid) {
         alert("Данные не проверены. Сначала нажмите «Проверить».");
@@ -589,93 +618,153 @@ function calculate() {
     
     const n = appState.numericN;
     const numericTmList = appState.numericFds.map(fd => fd.tm);
-    const kubList = numericTmList.map(tm => tmToCube(tm, n));
+    
+    const cubes = [];
+    for (const tm of numericTmList) {
+        const parts = tm.split('-');
+        const detPart = parts[0];
+        const funcPart = parts[1];
+        const det = detPart.split('*').map(x => parseInt(x, 10));
+        const func = [parseInt(funcPart, 10)];
+        cubes.push(encodeCube(det, func, n));
+    }
     
     const btnCalculate = document.getElementById('btnCalculate');
+    const statusBar = document.getElementById('statusBar');
+    
+    const toolbar = document.querySelector('.toolbar');
+    const btnCancel = document.createElement('button');
+    btnCancel.id = 'btnCancel';
+    btnCancel.textContent = '⏹ Отмена';
+    btnCancel.style.backgroundColor = '#dc3545';
+    btnCancel.style.color = 'white';
+    btnCancel.style.borderColor = '#dc3545';
+    toolbar.appendChild(btnCancel);
+    
+    const progressContainer = document.createElement('div');
+    progressContainer.id = 'progressContainer';
+    progressContainer.style.cssText = 'margin: 8px 0; padding: 8px 16px; background: #e9ecef; border-radius: 8px; display: none;';
+    progressContainer.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-family: monospace;">
+            <span id="progressText">Итерация: 0, Найдено ФЗ: 0</span>
+            <span id="progressTime">Время: 0с</span>
+        </div>
+        <div style="width: 100%; height: 4px; background: #dee2e6; border-radius: 2px; margin-top: 4px; overflow: hidden;">
+            <div id="progressBar" style="width: 0%; height: 100%; background: #0d6efd; border-radius: 2px; transition: width 0.3s;"></div>
+        </div>
+    `;
+    statusBar.parentNode.insertBefore(progressContainer, statusBar);
+    
+    cancelRequested = false;
+    let startTime = Date.now();
+    let lastProgressUpdate = Date.now();
+    
+    function updateProgress(iteration, kkz, total) {
+        const progressText = document.getElementById('progressText');
+        const progressBar = document.getElementById('progressBar');
+        const progressTime = document.getElementById('progressTime');
+        
+        if (progressText) {
+            progressText.textContent = `Итерация: ${iteration}, Найдено ФЗ: ${kkz}`;
+        }
+        if (progressBar) {
+            const pct = Math.min(iteration * 2, 95);
+            progressBar.style.width = pct + '%';
+        }
+        if (progressTime) {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            progressTime.textContent = `Время: ${elapsed}с`;
+        }
+    }
+    
+    function handleTimeout(iteration, kkz) {
+        return new Promise((resolve) => {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const shouldContinue = confirm(
+                `Расчёт выполняется уже ${elapsed} секунд.\n` +
+                `Итерация: ${iteration}, найдено ФЗ: ${kkz}\n\n` +
+                'Продолжить расчёт?'
+            );
+            resolve(shouldContinue);
+        });
+    }
+    
     btnCalculate.disabled = true;
     btnCalculate.textContent = '⏳ Расчёт...';
-    document.getElementById('statusBar').textContent = "Вычисление замыкания...";
+    statusBar.textContent = 'Вычисление замыкания...';
+    progressContainer.style.display = 'block';
     
-    setTimeout(() => {
+    btnCancel.onclick = function() {
+        cancelRequested = true;
+        btnCancel.textContent = '⏳ Отмена...';
+        btnCancel.disabled = true;
+        statusBar.textContent = 'Отмена расчёта...';
+    };
+    
+    setTimeout(async () => {
         try {
-            const closureCubes = computeClosure(kubList, n);
+            const resultCubes = await new Promise((resolve, reject) => {
+                setTimeout(() => {
+                    try {
+                        const result = computeClosure(
+                            cubes, 
+                            n,
+                            updateProgress,
+                            handleTimeout
+                        );
+                        resolve(result);
+                    } catch (err) {
+                        reject(err);
+                    }
+                }, 10);
+            });
+            
+            if (cancelRequested) {
+                statusBar.textContent = 'Расчёт отменён пользователем.';
+                btnCalculate.disabled = false;
+                btnCalculate.innerHTML = '⚡ Рассчитать';
+                btnCancel.remove();
+                progressContainer.remove();
+                return;
+            }
             
             const closureNumeric = [];
-            for (const cube of closureCubes) {
-                const tmStr = cubeToTm(cube, n);
-                if (tmStr) closureNumeric.push(tmStr);
+            for (const cube of resultCubes) {
+                const { det, func } = decodeCube(cube, n);
+                if (func.length === 0 || det.length === 0) continue;
+                const detStr = det.join('*');
+                const funcStr = func.join('-');
+                closureNumeric.push(detStr + '-' + funcStr);
             }
             
             appState.closureResult = closureNumeric;
-            appState.closureCform = closureNumeric
-                .map(num => numericToCform(num, appState.attrMapReverse))
-                .filter(c => c);
-            
+            appState.closureCform = closureNumeric.map(num => numericToCform(num, appState.attrMapReverse)).filter(c => c);
             appState.resultSaved = false;
             renderClosureTable();
-            document.getElementById('statusBar').textContent = `Вычисление завершено. Всего ФЗ: ${appState.closureCform.length}`;
-            btnCalculate.disabled = false;
-            btnCalculate.innerHTML = '⚡ Рассчитать';
+            
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            statusBar.textContent = `Вычисление завершено за ${elapsed}с. Всего ФЗ: ${appState.closureCform.length}`;
+            
+            const progressBar = document.getElementById('progressBar');
+            if (progressBar) progressBar.style.width = '100%';
+            
         } catch (err) {
-            console.error(err);
-            document.getElementById('statusBar').textContent = `Ошибка: ${err.message}`;
-            alert("Ошибка при вычислении: " + err.message);
+            if (err.message.includes('отменён')) {
+                statusBar.textContent = 'Расчёт отменён пользователем.';
+            } else if (err.message.includes('таймаут')) {
+                statusBar.textContent = `Расчёт прерван: ${err.message}`;
+            } else {
+                console.error(err);
+                statusBar.textContent = `Ошибка: ${err.message}`;
+                alert("Ошибка при вычислении: " + err.message);
+            }
+        } finally {
             btnCalculate.disabled = false;
             btnCalculate.innerHTML = '⚡ Рассчитать';
+            btnCancel.remove();
+            progressContainer.remove();
         }
     }, 100);
-}
-
-// ============================================================
-// УТИЛИТЫ ДЛЯ РАБОТЫ С КУБАМИ
-// ============================================================
-
-function tmToCube(tmStr, n) {
-    if (!n || !tmStr) return 0;
-    const parts = tmStr.split('-');
-    const determinantPart = parts[0];
-    const functionPart = parts.length > 1 ? parts[1] : "";
-    let determinants = [];
-    if (determinantPart.includes('*')) {
-        determinants = determinantPart.split('*').map(x => parseInt(x, 10));
-    } else {
-        determinants = determinantPart ? [parseInt(determinantPart, 10)] : [];
-    }
-    let functions = [];
-    if (functionPart) {
-        if (functionPart.includes('-')) {
-            functions = functionPart.split('-').map(x => parseInt(x, 10));
-        } else {
-            functions = [parseInt(functionPart, 10)];
-        }
-    }
-    let value = 0;
-    for (let i = 0; i < n; i++) {
-        const attrNum = i + 1;
-        let digit;
-        if (determinants.includes(attrNum)) {
-            digit = 1;
-        } else if (functions.includes(attrNum)) {
-            digit = 2;
-        } else {
-            digit = 3;
-        }
-        value |= (digit << (i * 2));
-    }
-    return value;
-}
-
-function cubeToTm(cubeValue, n) {
-    if (!n) return "";
-    const determinants = [];
-    const functions = [];
-    for (let i = 0; i < n; i++) {
-        const digit = (cubeValue >> (i * 2)) & 3;
-        if (digit === 1) determinants.push((i + 1).toString());
-        else if (digit === 2) functions.push((i + 1).toString());
-    }
-    if (functions.length === 0) return "";
-    return determinants.join("*") + "-" + functions.join("-");
 }
 
 // ============================================================
@@ -692,9 +781,10 @@ function generateXmlContent() {
     lines.push('</fdsi>');
     
     if (appState.closureCform && appState.closureCform.length > 0) {
+        const sortedClosure = sortFdsByNumbers([...appState.closureCform]);
         lines.push('<fdsc>');
-        for (let idx = 0; idx < appState.closureCform.length; idx++) {
-            lines.push(`    <fd${idx + 1}>${appState.closureCform[idx]}</fd${idx + 1}>`);
+        for (let idx = 0; idx < sortedClosure.length; idx++) {
+            lines.push(`    <fd${idx + 1}>${sortedClosure[idx]}</fd${idx + 1}>`);
         }
         lines.push('</fdsc>');
     }
@@ -797,7 +887,8 @@ function copyClosureToClipboard() {
         return;
     }
     
-    const text = appState.closureCform.join('\n');
+    const sortedClosure = sortFdsByNumbers([...appState.closureCform]);
+    const text = sortedClosure.join('\n');
     
     navigator.clipboard.writeText(text).then(() => {
         document.getElementById('statusBar').textContent = "Результат скопирован в буфер обмена.";
@@ -954,7 +1045,6 @@ function updateUI() {
 // НАСТРОЙКА СОБЫТИЙ
 // ============================================================
 
-// Добавляем кнопку "Копировать результат"
 const toolbar = document.querySelector('.toolbar');
 const btnCopy = document.createElement('button');
 btnCopy.id = 'btnCopy';
@@ -986,7 +1076,6 @@ document.getElementById('helpModal').addEventListener('click', (e) => {
     }
 });
 
-// Горячие клавиши
 document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 'o') {
         e.preventDefault();
@@ -1003,6 +1092,5 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
-// Инициализация
 updateUI();
 console.log(`Версия ${APP_VERSION} загружена`);
